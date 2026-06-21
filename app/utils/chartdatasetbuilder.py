@@ -1,4 +1,4 @@
-from chartcodec import ChartCodec, calculate_atr, N_BINS
+from chartcodec import ChartCodec, calculate_atr, N_BINS, M1_SCALE, M5_SCALE, M15_SCALE, H1_SCALE, D1_SCALE
 import numpy as np
 import pandas as pd
 
@@ -86,7 +86,7 @@ if __name__ == "__main__":
         "Close": close_prices,
     })
 
-    SCALE = 24.0
+    SCALE = M1_SCALE
     WINDOW = 100
 
     codec = ChartCodec(scale=SCALE)

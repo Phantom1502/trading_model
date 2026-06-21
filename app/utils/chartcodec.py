@@ -28,7 +28,6 @@ Tổ chức thành 2 class:
        -> PHẢI lưu lại 2 giá trị này kèm mỗi mẫu, không thể tự suy ra
        chỉ từ text khi decode.
 """
-
 import re
 import numpy as np
 import pandas as pd
@@ -36,6 +35,12 @@ import pandas as pd
 N_BINS = 1024
 _TOKEN_RE = re.compile(r"([OHLC])_(\d+)")
 
+# Các loại scale factor có thể dùng để chuẩn hoá giá trong cửa sổ OHLC
+M1_SCALE = 24.0      # Window Range = M1_SCALE * ATR
+M5_SCALE = 27.38      # Window Range = M5_SCALE * ATR
+M15_SCALE = 30.0     # Window Range = M15_SCALE * ATR
+H1_SCALE = 28.19     # Window Range = H1_SCALE * ATR
+D1_SCALE = 17.92     # Window Range = D1_SCALE * ATR
 
 # ──────────────────────────────────────────────────────────────────────
 # Hàm tiện ích độc lập: ATR

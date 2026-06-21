@@ -13,7 +13,7 @@ def calculate_atr(df, period=100):
     return atr
 
 if __name__ == "__main__":
-    df_history = pd.read_csv("mock_price_data.csv") 
+    df_history = pd.read_csv("data\\XAUUSD_5Min.csv") 
     
     # 1. Tính ATR 100 cho toàn bộ tập dữ liệu
     df_history['ATR_100'] = calculate_atr(df_history, period=100)
