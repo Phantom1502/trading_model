@@ -118,6 +118,81 @@ SEMANTIC_BENCH: List[BenchItem] = [
         negative = ["y tá", "dược sĩ", "kỹ thuật viên xét nghiệm", "hộ lý"],
         note     = "hard negative: cùng là nhân viên y tế nhưng khác vai trò",
     ),
+    BenchItem(
+        prompt="Con chó là",
+        positive=["động vật", "thú nuôi", "sinh vật"],
+        negative=["thực vật", "quốc gia", "hành tinh", "ngôn ngữ"],
+    ),
+    BenchItem(
+        prompt="Đại bàng là",
+        positive=["loài chim", "động vật", "sinh vật"],
+        negative=["loài cá", "thực vật", "quốc gia", "hành tinh"],
+    ),
+    BenchItem(
+        prompt="Cá voi là",
+        positive=["động vật có vú", "động vật", "sinh vật"],
+        negative=["loài cá", "thực vật", "quốc gia", "núi lửa"],
+    ),
+    BenchItem(
+        prompt="Bác sĩ là",
+        positive=["nhân viên y tế", "người lao động", "chuyên gia"],
+        negative=["động vật", "quốc gia", "phần mềm", "hành tinh"],
+    ),
+    BenchItem(
+        prompt="Lập trình viên là",
+        positive=["người lao động", "kỹ sư", "chuyên gia"],
+        negative=["loài chim", "quốc gia", "thực vật", "núi lửa"],
+    ),
+    BenchItem(
+        prompt="Sao Hỏa là",
+        positive=["hành tinh", "thiên thể"],
+        negative=["ngôi sao", "quốc gia", "động vật", "thực vật"],
+    ),
+    BenchItem(
+        prompt="Mặt Trăng là",
+        positive=["vệ tinh", "thiên thể"],
+        negative=["hành tinh", "quốc gia", "động vật", "ngôn ngữ"],
+    ),
+    BenchItem(
+        prompt="Con chó là",
+        positive=["động vật", "thú nuôi", "sinh vật"],
+        negative=["thực vật", "quốc gia", "hành tinh", "ngôn ngữ"],
+    ),
+    BenchItem(
+        prompt="Hoa hồng là",
+        positive=["thực vật", "loài hoa", "sinh vật"],
+        negative=["động vật", "quốc gia", "phần mềm", "hành tinh"],
+    ),
+    BenchItem(
+        prompt="Xe hơi là",
+        positive=["phương tiện", "công cụ", "máy móc"],
+        negative=["động vật", "thực vật", "quốc gia", "thiên thể"],
+    ),
+    BenchItem(
+        prompt="Máy bay là",
+        positive=["phương tiện", "máy móc", "công nghệ"],
+        negative=["động vật", "thực vật", "quốc gia", "núi lửa"],
+    ),
+    BenchItem(
+        prompt="Bệnh viện là",
+        positive=["cơ sở y tế", "tổ chức", "nơi làm việc"],
+        negative=["động vật", "hành tinh", "thực vật", "loài chim"],
+    ),
+    BenchItem(
+        prompt="Trường học là",
+        positive=["cơ sở giáo dục", "tổ chức", "nơi học tập"],
+        negative=["động vật", "hành tinh", "quốc gia", "vũ khí"],
+    ),
+    BenchItem(
+        prompt="Internet là",
+        positive=["mạng lưới", "công nghệ", "hệ thống"],
+        negative=["động vật", "quốc gia", "ngọn núi", "loài cây"],
+    ),
+    BenchItem(
+        prompt="Âm nhạc là",
+        positive=["nghệ thuật", "hoạt động sáng tạo", "hình thức biểu đạt"],
+        negative=["quốc gia", "hành tinh", "loài chim", "vũ khí"],
+    )
 ]
 
 
@@ -148,6 +223,41 @@ ENTITY_BENCH: List[BenchItem] = [
         positive = ["chính trị gia", "lãnh tụ", "nhà cách mạng"],
         negative = ["nhà khoa học", "nhà văn", "nhạc sĩ", "vận động viên"],
     ),
+    BenchItem(
+        prompt="Isaac Newton là",
+        positive=["nhà vật lý", "nhà khoa học"],
+        negative=["ca sĩ", "nhà văn", "diễn viên", "vận động viên"],
+    ),
+    BenchItem(
+        prompt="Charles Darwin là",
+        positive=["nhà sinh học", "nhà khoa học"],
+        negative=["ca sĩ", "nhà thơ", "cầu thủ", "diễn viên"],
+    ),
+    BenchItem(
+        prompt="Nikola Tesla là",
+        positive=["nhà phát minh", "kỹ sư"],
+        negative=["ca sĩ", "nhà thơ", "cầu thủ", "diễn viên"],
+    ),
+    BenchItem(
+        prompt="Galileo Galilei là",
+        positive=["nhà thiên văn", "nhà khoa học"],
+        negative=["ca sĩ", "diễn viên", "vận động viên", "nhà văn"],
+    ),
+    BenchItem(
+        prompt="Mozart là",
+        positive=["nhà soạn nhạc", "nhạc sĩ"],
+        negative=["nhà vật lý", "cầu thủ", "bác sĩ", "nhà hóa học"],
+    ),
+    BenchItem(
+        prompt="Beethoven là",
+        positive=["nhạc sĩ", "nhà soạn nhạc"],
+        negative=["cầu thủ", "nhà vật lý", "ca sĩ", "nhà sinh học"],
+    ),
+    BenchItem(
+        prompt="Leonardo da Vinci là",
+        positive=["họa sĩ", "nhà phát minh"],
+        negative=["ca sĩ", "vận động viên", "phi hành gia", "bác sĩ"],
+    ),
     # ── Địa lý ────────────────────────────────────────────────────────────
     BenchItem(
         prompt   = "Hà Nội là thủ đô của",
@@ -168,6 +278,41 @@ ENTITY_BENCH: List[BenchItem] = [
         prompt   = "Núi Phú Sĩ nằm ở",
         positive = ["Nhật Bản", "nước Nhật"],
         negative = ["Trung Quốc", "Hàn Quốc", "Việt Nam", "Thái Lan"],
+    ),
+    BenchItem(
+        prompt="Tokyo là thủ đô của",
+        positive=["Nhật Bản"],
+        negative=["Hàn Quốc", "Trung Quốc", "Thái Lan", "Singapore"],
+    ),
+    BenchItem(
+        prompt="Berlin là thủ đô của",
+        positive=["Đức"],
+        negative=["Pháp", "Áo", "Ba Lan", "Bỉ"],
+    ),
+    BenchItem(
+        prompt="Thủ đô của Canada là",
+        positive=[" Ottawa"],
+        negative=[" Toronto", " Montreal", " Vancouver", " Calgary"],
+    ),
+    BenchItem(
+        prompt="Sông dài nhất Việt Nam là",
+        positive=[" sông Mekong"],
+        negative=[" sông Hồng", " sông Đồng Nai", " sông Đà"],
+    ),
+    BenchItem(
+        prompt="Sydney nằm ở",
+        positive=["Úc", "Australia"],
+        negative=["Canada", "Brazil", "Ấn Độ", "Nga"],
+    ),
+    BenchItem(
+        prompt="Sông Nile chảy qua",
+        positive=["Ai Cập"],
+        negative=["Việt Nam", "Nhật Bản", "Hàn Quốc", "Thái Lan"],
+    ),
+    BenchItem(
+        prompt="Tháp Eiffel nằm ở",
+        positive=["Pháp", "Paris"],
+        negative=["Đức", "Ý", "Tây Ban Nha", "Anh"],
     ),
     # ── Sinh vật ──────────────────────────────────────────────────────────
     BenchItem(
@@ -235,6 +380,16 @@ ENTITY_BENCH: List[BenchItem] = [
         negative = ["động vật tiêu hóa thức ăn", "vi khuẩn phân hủy chất hữu cơ",
                     "con người hít thở oxygen"],
     ),
+    BenchItem(
+        prompt="Ký hiệu hóa học của bạc là",
+        positive=[" Ag"],
+        negative=[" Au", " Fe", " Cu", " Zn"],
+    ),
+    BenchItem(
+        prompt="Nguyên tố có số hiệu nguyên tử 1 là",
+        positive=[" Hydro"],
+        negative=[" Oxy", " Heli", " Carbon", " Nitơ"],
+    )
 ]
 
 
@@ -295,6 +450,38 @@ FACT_BENCH: List[BenchItem] = [
         positive = [" 300.000 km/s", " 3×10⁸ m/s"],
         negative = [" 1.000 km/s", " 30.000 km/s", " 3.000.000 km/s"],
     ),
+    BenchItem(
+        prompt="Hành tinh gần Mặt Trời nhất là",
+        positive=[" Sao Thủy"],
+        negative=[" Sao Kim", " Trái Đất", " Sao Hỏa"],
+    ),
+    BenchItem(
+        prompt="DNA viết tắt của",
+        positive=[" Deoxyribonucleic Acid"],
+        negative=[" Digital Network Access",
+                " Dynamic Numeric Array",
+                " Distributed Neural Architecture"],
+    ),
+    BenchItem(
+        prompt="Kim loại lỏng ở nhiệt độ phòng là",
+        positive=[" Thủy ngân"],
+        negative=[" Sắt", " Đồng", " Nhôm", " Bạc"],
+    ),
+    BenchItem(
+        prompt="Trái Đất quay quanh",
+        positive=[" Mặt Trời"],
+        negative=[" Mặt Trăng", " Sao Hỏa", " Sao Mộc"],
+    ),
+    BenchItem(
+        prompt="Đơn vị cơ bản đo khối lượng trong SI là",
+        positive=[" kilogram"],
+        negative=[" gram", " pound", " ounce"],
+    ),
+    BenchItem(
+        prompt="Số nguyên tố nhỏ nhất là",
+        positive=[" 2"],
+        negative=[" 1", " 3", " 5", " 7"],
+    )
 ]
 
 
@@ -361,6 +548,68 @@ OOD_BENCH: List[BenchItem] = [
         positive = ["nền tảng kết nối trực tuyến", "công cụ giao tiếp số", "dịch vụ internet"],
         negative = ["mạng lưới điện", "mạng giao thông", "loài sinh vật", "loại thực phẩm"],
     ),
+    BenchItem(
+        prompt="Zorb là một loài động vật. Mọi động vật đều là sinh vật. Zorb là",
+        positive=["sinh vật"],
+        negative=["quốc gia", "thành phố", "hành tinh"],
+    ),
+    BenchItem(
+        prompt="Quark là một loại hạt cơ bản. Mọi hạt cơ bản đều là vật chất. Quark là",
+        positive=["vật chất"],
+        negative=["năng lượng", "sinh vật", "ngôn ngữ"],
+    ),
+    BenchItem(
+        prompt="An là bác sĩ. Mọi bác sĩ đều là nhân viên y tế. Mọi nhân viên y tế đều là người lao động. An là",
+        positive=["người lao động"],
+        negative=["động vật", "thực vật", "hành tinh"],
+    ),
+    BenchItem(
+        prompt="Blen là một loại flar. Mọi flar đều là zent. Mọi zent đều là sinh vật. Blen là",
+        positive=["sinh vật"],
+        negative=["quốc gia", "phần mềm", "thiên hà"],
+    ),
+    BenchItem(
+        prompt="""
+    Loma là một loài động vật.
+    Mọi động vật đều là sinh vật.
+
+    Loma là
+    """,
+        positive=["sinh vật"],
+        negative=["quốc gia","hành tinh","phần mềm"],
+    ),
+    BenchItem(
+        prompt="""
+    Kira là bác sĩ.
+    Mọi bác sĩ đều làm việc trong ngành y tế.
+
+    Kira thuộc
+    """,
+        positive=["ngành y tế"],
+        negative=["ngành nông nghiệp","thể thao","hàng không"],
+    ),
+    BenchItem(
+        prompt="""
+    Mọi flar đều là zent.
+    Mọi zent đều là sinh vật.
+    Blen là một flar.
+
+    Blen là
+    """,
+        positive=["sinh vật"],
+        negative=["quốc gia","hành tinh","thực vật"],
+    ),
+    BenchItem(
+        prompt="""
+    Mọi nori đều là phương tiện.
+    Mọi phương tiện đều được dùng để di chuyển.
+    Teka là một nori.
+
+    Teka được dùng để
+    """,
+        positive=["di chuyển"],
+        negative=["quang hợp","săn mồi","bay vào vũ trụ"],
+    )
 ]
 
 
