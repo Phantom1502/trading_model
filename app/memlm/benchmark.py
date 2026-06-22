@@ -12,10 +12,10 @@ benchmark.py — Đánh giá pretrained model toàn diện
 Mỗi chiều đo một khía cạnh khác nhau của pretrain:
 
     Semantic  — phân biệt loại thực thể TRONG CÙNG MIỀN (hard negatives)
-    Entity    — phân biệt chi tiết (nhà vật lý vs nhà hóa học)
-    Fact      — sự kiện cụ thể, không tranh cãi
+    Entity    — phân biệt chi tiết trong cùng miền (nhà vật lý vs nhà hóa học)
+    Fact      — sự kiện cụ thể không tranh cãi
     Language  — chất lượng sinh văn bản: Distinct-1/2, tỉ lệ lặp
-    OOD       — generalization ra ngoài phân phối train (robot, blockchain...)
+    OOD       — generalization ra ngoài phân phối train
 
 Cách dùng:
     from benchmark import run_all
@@ -64,9 +64,9 @@ class BenchItem:
 # ══════════════════════════════════════════════════════════════════════════
 # Cấp 1: Semantic — hard negatives (cùng siêu miền, khác loại)
 #
-# Khác với bản cũ dùng negative "quá dễ" (quốc gia, hành tinh),
-# bản này dùng negative GẦN NGHĨA để buộc model phải học phân biệt
-# tinh tế hơn trong cùng siêu miền.
+# Negative phải là "gần nghĩa" — cùng siêu miền nhưng khác loại cụ thể.
+# Ví dụ: "Con mèo" → negative là "loài chim/cá" (không phải "quốc gia").
+# Bộ này 15 item, phủ 15 miền khác nhau: không item nào trùng chủ đề.
 # ══════════════════════════════════════════════════════════════════════════
 
 SEMANTIC_BENCH: List[BenchItem] = [
@@ -74,144 +74,108 @@ SEMANTIC_BENCH: List[BenchItem] = [
         prompt   = "Con mèo là",
         positive = ["động vật có vú", "thú nuôi", "sinh vật"],
         negative = ["loài chim", "loài cá", "thực vật", "côn trùng"],
-        note     = "hard negative: cùng là sinh vật nhưng khác lớp",
+        note     = "sinh vật — hard negative: cùng giới động vật, khác lớp",
     ),
     BenchItem(
         prompt   = "Albert Einstein là",
         positive = ["nhà vật lý", "nhà khoa học", "học giả"],
         negative = ["nhà hóa học", "nhà toán học", "nhà triết học", "nhà văn"],
-        note     = "hard negative: cùng là học giả nhưng khác ngành",
+        note     = "người — hard negative: cùng là học giả, khác ngành",
     ),
     BenchItem(
         prompt   = "Hà Nội là",
-        positive = ["thành phố", "thủ đô", "đô thị"],
-        negative = ["thị trấn", "làng quê", "tỉnh lẻ", "vùng nông thôn"],
-        note     = "hard negative: cùng là địa danh nhưng khác quy mô",
+        positive = ["thành phố", "thủ đô", "đô thị lớn"],
+        negative = ["thị trấn", "làng quê", "vùng nông thôn", "tỉnh lẻ"],
+        note     = "địa danh — hard negative: cùng là địa danh, khác quy mô",
     ),
     BenchItem(
         prompt   = "Python là",
         positive = ["ngôn ngữ lập trình", "công cụ lập trình"],
         negative = ["ngôn ngữ tự nhiên", "ngôn ngữ đánh dấu", "ngôn ngữ truy vấn"],
-        note     = "hard negative: cùng là 'ngôn ngữ' nhưng khác loại",
+        note     = "công nghệ — hard negative: cùng là 'ngôn ngữ', khác loại",
     ),
     BenchItem(
         prompt   = "Sông Hồng là",
         positive = ["con sông", "dòng sông"],
         negative = ["hồ nước", "vịnh biển", "suối nhỏ", "kênh đào"],
-        note     = "hard negative: cùng là thủy vực nhưng khác loại",
+        note     = "địa lý — hard negative: cùng là thủy vực, khác loại",
     ),
     BenchItem(
         prompt   = "Bóng đá là",
-        positive = ["môn thể thao", "trò chơi tập thể"],
+        positive = ["môn thể thao tập thể", "trò chơi vận động"],
         negative = ["môn thể thao cá nhân", "trò chơi điện tử", "bộ môn nghệ thuật"],
-        note     = "hard negative: cùng là hoạt động giải trí nhưng khác hình thức",
+        note     = "thể thao — hard negative: cùng là hoạt động giải trí, khác hình thức",
     ),
     BenchItem(
         prompt   = "Mặt Trời là",
         positive = ["ngôi sao", "thiên thể phát sáng"],
         negative = ["hành tinh", "vệ tinh", "sao lùn trắng", "lỗ đen"],
-        note     = "hard negative: cùng là thiên thể nhưng khác loại",
+        note     = "thiên văn — hard negative: cùng là thiên thể, khác loại",
     ),
     BenchItem(
         prompt   = "Bác sĩ là",
-        positive = ["chuyên gia y tế", "người làm ngành y"],
+        positive = ["chuyên gia y tế", "người hành nghề y"],
         negative = ["y tá", "dược sĩ", "kỹ thuật viên xét nghiệm", "hộ lý"],
-        note     = "hard negative: cùng là nhân viên y tế nhưng khác vai trò",
+        note     = "nghề nghiệp — hard negative: cùng là nhân viên y tế, khác vai trò",
     ),
     BenchItem(
-        prompt="Con chó là",
-        positive=["động vật", "thú nuôi", "sinh vật"],
-        negative=["thực vật", "quốc gia", "hành tinh", "ngôn ngữ"],
+        prompt   = "Piano là",
+        positive = ["nhạc cụ", "nhạc cụ có phím"],
+        negative = ["nhạc cụ có dây", "nhạc cụ hơi", "nhạc cụ gõ màng", "nhạc cụ điện tử"],
+        note     = "âm nhạc — hard negative: cùng là nhạc cụ, khác cơ chế phát âm",
     ),
     BenchItem(
-        prompt="Đại bàng là",
-        positive=["loài chim", "động vật", "sinh vật"],
-        negative=["loài cá", "thực vật", "quốc gia", "hành tinh"],
+        prompt   = "Tiểu thuyết là",
+        positive = ["tác phẩm văn học", "thể loại văn xuôi dài"],
+        negative = ["truyện ngắn", "bài thơ", "kịch bản", "tản văn"],
+        note     = "văn học — hard negative: cùng là thể loại văn học, khác hình thức",
     ),
     BenchItem(
-        prompt="Cá voi là",
-        positive=["động vật có vú", "động vật", "sinh vật"],
-        negative=["loài cá", "thực vật", "quốc gia", "núi lửa"],
+        prompt   = "Luật sư là",
+        positive = ["người hành nghề pháp lý", "chuyên gia pháp luật"],
+        negative = ["thẩm phán", "công tố viên", "thư ký tòa án", "cảnh sát"],
+        note     = "pháp lý — hard negative: cùng là người trong hệ thống tư pháp, khác vai trò",
     ),
     BenchItem(
-        prompt="Bác sĩ là",
-        positive=["nhân viên y tế", "người lao động", "chuyên gia"],
-        negative=["động vật", "quốc gia", "phần mềm", "hành tinh"],
+        prompt   = "Muỗi là",
+        positive = ["côn trùng", "động vật chân đốt"],
+        negative = ["động vật có vú", "loài chim", "bò sát", "động vật thân mềm"],
+        note     = "sinh vật — hard negative: cùng là động vật không xương, khác ngành",
     ),
     BenchItem(
-        prompt="Lập trình viên là",
-        positive=["người lao động", "kỹ sư", "chuyên gia"],
-        negative=["loài chim", "quốc gia", "thực vật", "núi lửa"],
+        prompt   = "Đái tháo đường là",
+        positive = ["bệnh rối loạn chuyển hóa", "bệnh mãn tính"],
+        negative = ["bệnh truyền nhiễm", "bệnh ung thư", "bệnh tim mạch", "bệnh hô hấp"],
+        note     = "y tế — hard negative: cùng là bệnh, khác cơ chế",
     ),
     BenchItem(
-        prompt="Sao Hỏa là",
-        positive=["hành tinh", "thiên thể"],
-        negative=["ngôi sao", "quốc gia", "động vật", "thực vật"],
+        prompt   = "Kiến trúc sư là",
+        positive = ["người thiết kế công trình", "chuyên gia xây dựng"],
+        negative = ["kỹ sư kết cấu", "thợ nề", "nhà điêu khắc", "kỹ sư điện"],
+        note     = "nghề — hard negative: cùng liên quan xây dựng/sáng tạo, khác chuyên môn",
     ),
     BenchItem(
-        prompt="Mặt Trăng là",
-        positive=["vệ tinh", "thiên thể"],
-        negative=["hành tinh", "quốc gia", "động vật", "ngôn ngữ"],
+        prompt   = "Lúa là",
+        positive = ["cây lương thực", "thực vật", "cây trồng"],
+        negative = ["cây cảnh", "cây dược liệu", "cây công nghiệp", "cây ăn quả"],
+        note     = "nông nghiệp — hard negative: cùng là cây trồng, khác mục đích",
     ),
-    BenchItem(
-        prompt="Con chó là",
-        positive=["động vật", "thú nuôi", "sinh vật"],
-        negative=["thực vật", "quốc gia", "hành tinh", "ngôn ngữ"],
-    ),
-    BenchItem(
-        prompt="Hoa hồng là",
-        positive=["thực vật", "loài hoa", "sinh vật"],
-        negative=["động vật", "quốc gia", "phần mềm", "hành tinh"],
-    ),
-    BenchItem(
-        prompt="Xe hơi là",
-        positive=["phương tiện", "công cụ", "máy móc"],
-        negative=["động vật", "thực vật", "quốc gia", "thiên thể"],
-    ),
-    BenchItem(
-        prompt="Máy bay là",
-        positive=["phương tiện", "máy móc", "công nghệ"],
-        negative=["động vật", "thực vật", "quốc gia", "núi lửa"],
-    ),
-    BenchItem(
-        prompt="Bệnh viện là",
-        positive=["cơ sở y tế", "tổ chức", "nơi làm việc"],
-        negative=["động vật", "hành tinh", "thực vật", "loài chim"],
-    ),
-    BenchItem(
-        prompt="Trường học là",
-        positive=["cơ sở giáo dục", "tổ chức", "nơi học tập"],
-        negative=["động vật", "hành tinh", "quốc gia", "vũ khí"],
-    ),
-    BenchItem(
-        prompt="Internet là",
-        positive=["mạng lưới", "công nghệ", "hệ thống"],
-        negative=["động vật", "quốc gia", "ngọn núi", "loài cây"],
-    ),
-    BenchItem(
-        prompt="Âm nhạc là",
-        positive=["nghệ thuật", "hoạt động sáng tạo", "hình thức biểu đạt"],
-        negative=["quốc gia", "hành tinh", "loài chim", "vũ khí"],
-    )
 ]
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Cấp 2: Entity — phân biệt tinh tế trong cùng miền
-# Mở rộng từ 5 → 20 item để score ổn định hơn về mặt thống kê
+# Cấp 2: Entity — phân biệt chi tiết trong cùng miền
+# 26 item, phủ 5 nhóm chủ đề: người, địa lý, sinh vật, công nghệ, thiên văn
+# Không item nào trùng prompt với nhau hoặc với SEMANTIC_BENCH
 # ══════════════════════════════════════════════════════════════════════════
 
 ENTITY_BENCH: List[BenchItem] = [
-    # ── Người nổi tiếng ───────────────────────────────────────────────────
+
+    # ── Nhóm 1: Người nổi tiếng (8 item, 8 ngành khác nhau) ─────────────
     BenchItem(
         prompt   = "Albert Einstein là",
         positive = ["nhà vật lý", "nhà khoa học"],
         negative = ["nhà hóa học", "nhà văn", "ca sĩ", "vận động viên"],
-    ),
-    BenchItem(
-        prompt   = "William Shakespeare là",
-        positive = ["nhà văn", "nhà thơ", "kịch tác gia"],
-        negative = ["nhà khoa học", "nhà chính trị", "nhà thám hiểm", "nhạc sĩ"],
     ),
     BenchItem(
         prompt   = "Marie Curie là",
@@ -221,44 +185,35 @@ ENTITY_BENCH: List[BenchItem] = [
     BenchItem(
         prompt   = "Hồ Chí Minh là",
         positive = ["chính trị gia", "lãnh tụ", "nhà cách mạng"],
-        negative = ["nhà khoa học", "nhà văn", "nhạc sĩ", "vận động viên"],
+        negative = ["nhà khoa học", "nhạc sĩ", "vận động viên", "nhà văn"],
     ),
     BenchItem(
-        prompt="Isaac Newton là",
-        positive=["nhà vật lý", "nhà khoa học"],
-        negative=["ca sĩ", "nhà văn", "diễn viên", "vận động viên"],
+        prompt   = "William Shakespeare là",
+        positive = ["nhà văn", "kịch tác gia", "nhà thơ"],
+        negative = ["nhà khoa học", "chính trị gia", "nhà thám hiểm", "nhạc sĩ"],
     ),
     BenchItem(
-        prompt="Charles Darwin là",
-        positive=["nhà sinh học", "nhà khoa học"],
-        negative=["ca sĩ", "nhà thơ", "cầu thủ", "diễn viên"],
+        prompt   = "Mozart là",
+        positive = ["nhạc sĩ", "nhà soạn nhạc"],
+        negative = ["nhà vật lý", "cầu thủ", "bác sĩ", "nhà văn"],
     ),
     BenchItem(
-        prompt="Nikola Tesla là",
-        positive=["nhà phát minh", "kỹ sư"],
-        negative=["ca sĩ", "nhà thơ", "cầu thủ", "diễn viên"],
+        prompt   = "Leonardo da Vinci là",
+        positive = ["họa sĩ", "nhà phát minh", "nghệ sĩ"],
+        negative = ["ca sĩ", "vận động viên", "phi hành gia", "chính trị gia"],
     ),
     BenchItem(
-        prompt="Galileo Galilei là",
-        positive=["nhà thiên văn", "nhà khoa học"],
-        negative=["ca sĩ", "diễn viên", "vận động viên", "nhà văn"],
+        prompt   = "Charles Darwin là",
+        positive = ["nhà sinh học", "nhà khoa học", "nhà tự nhiên học"],
+        negative = ["ca sĩ", "nhà thơ", "cầu thủ bóng đá", "diễn viên"],
     ),
     BenchItem(
-        prompt="Mozart là",
-        positive=["nhà soạn nhạc", "nhạc sĩ"],
-        negative=["nhà vật lý", "cầu thủ", "bác sĩ", "nhà hóa học"],
+        prompt   = "Nikola Tesla là",
+        positive = ["nhà phát minh", "kỹ sư điện"],
+        negative = ["ca sĩ", "nhà thơ", "vận động viên", "diễn viên"],
     ),
-    BenchItem(
-        prompt="Beethoven là",
-        positive=["nhạc sĩ", "nhà soạn nhạc"],
-        negative=["cầu thủ", "nhà vật lý", "ca sĩ", "nhà sinh học"],
-    ),
-    BenchItem(
-        prompt="Leonardo da Vinci là",
-        positive=["họa sĩ", "nhà phát minh"],
-        negative=["ca sĩ", "vận động viên", "phi hành gia", "bác sĩ"],
-    ),
-    # ── Địa lý ────────────────────────────────────────────────────────────
+
+    # ── Nhóm 2: Địa lý (8 item, trải khắp 5 châu) ───────────────────────
     BenchItem(
         prompt   = "Hà Nội là thủ đô của",
         positive = ["Việt Nam", "nước Việt Nam"],
@@ -267,54 +222,40 @@ ENTITY_BENCH: List[BenchItem] = [
     BenchItem(
         prompt   = "Tokyo là thủ đô của",
         positive = ["Nhật Bản", "nước Nhật"],
-        negative = ["Trung Quốc", "Hàn Quốc", "Thái Lan", "Việt Nam"],
+        negative = ["Hàn Quốc", "Trung Quốc", "Thái Lan", "Singapore"],
     ),
     BenchItem(
-        prompt   = "Sông Mekong chảy qua",
-        positive = ["nhiều quốc gia Đông Nam Á", "Việt Nam"],
-        negative = ["châu Âu", "châu Phi", "Bắc Mỹ", "Úc"],
+        prompt   = "Berlin là thủ đô của",
+        positive = ["Đức", "nước Đức"],
+        negative = ["Pháp", "Áo", "Ba Lan", "Bỉ"],
     ),
     BenchItem(
-        prompt   = "Núi Phú Sĩ nằm ở",
-        positive = ["Nhật Bản", "nước Nhật"],
-        negative = ["Trung Quốc", "Hàn Quốc", "Việt Nam", "Thái Lan"],
+        prompt   = "Tháp Eiffel nằm ở",
+        positive = ["Pháp", "Paris"],
+        negative = ["Đức", "Ý", "Tây Ban Nha", "Anh"],
     ),
     BenchItem(
-        prompt="Tokyo là thủ đô của",
-        positive=["Nhật Bản"],
-        negative=["Hàn Quốc", "Trung Quốc", "Thái Lan", "Singapore"],
+        prompt   = "Sông Nile chảy qua",
+        positive = ["Ai Cập", "Bắc Phi"],
+        negative = ["Việt Nam", "Nhật Bản", "Brazil", "Ấn Độ"],
     ),
     BenchItem(
-        prompt="Berlin là thủ đô của",
-        positive=["Đức"],
-        negative=["Pháp", "Áo", "Ba Lan", "Bỉ"],
+        prompt   = "Sydney nằm ở",
+        positive = ["Úc", "Australia"],
+        negative = ["Canada", "Brazil", "Ấn Độ", "Nam Phi"],
     ),
     BenchItem(
-        prompt="Thủ đô của Canada là",
-        positive=[" Ottawa"],
-        negative=[" Toronto", " Montreal", " Vancouver", " Calgary"],
+        prompt   = "Angkor Wat nằm ở",
+        positive = ["Campuchia", "Đông Nam Á"],
+        negative = ["Thái Lan", "Việt Nam", "Myanmar", "Lào"],
     ),
     BenchItem(
-        prompt="Sông dài nhất Việt Nam là",
-        positive=[" sông Mekong"],
-        negative=[" sông Hồng", " sông Đồng Nai", " sông Đà"],
+        prompt   = "Sông Amazon chảy qua",
+        positive = ["Nam Mỹ", "Brazil"],
+        negative = ["châu Phi", "châu Á", "Bắc Mỹ", "châu Âu"],
     ),
-    BenchItem(
-        prompt="Sydney nằm ở",
-        positive=["Úc", "Australia"],
-        negative=["Canada", "Brazil", "Ấn Độ", "Nga"],
-    ),
-    BenchItem(
-        prompt="Sông Nile chảy qua",
-        positive=["Ai Cập"],
-        negative=["Việt Nam", "Nhật Bản", "Hàn Quốc", "Thái Lan"],
-    ),
-    BenchItem(
-        prompt="Tháp Eiffel nằm ở",
-        positive=["Pháp", "Paris"],
-        negative=["Đức", "Ý", "Tây Ban Nha", "Anh"],
-    ),
-    # ── Sinh vật ──────────────────────────────────────────────────────────
+
+    # ── Nhóm 3: Sinh vật (4 item, 4 lớp khác nhau) ──────────────────────
     BenchItem(
         prompt   = "Hổ là loài động vật",
         positive = ["ăn thịt", "nguy hiểm", "thuộc họ mèo lớn"],
@@ -327,10 +268,16 @@ ENTITY_BENCH: List[BenchItem] = [
     ),
     BenchItem(
         prompt   = "Đại bàng là loài",
-        positive = ["chim", "động vật có cánh", "chim săn mồi"],
+        positive = ["chim", "chim săn mồi", "động vật có cánh"],
         negative = ["thú", "bò sát", "cá", "côn trùng"],
     ),
-    # ── Công nghệ ─────────────────────────────────────────────────────────
+    BenchItem(
+        prompt   = "Cá mập là loài",
+        positive = ["cá", "động vật săn mồi biển"],
+        negative = ["động vật có vú", "chim biển", "bò sát", "động vật giáp xác"],
+    ),
+
+    # ── Nhóm 4: Công nghệ & khoa học (4 item) ────────────────────────────
     BenchItem(
         prompt   = "Ngôn ngữ Python thường được dùng để",
         positive = ["lập trình", "phân tích dữ liệu", "xây dựng ứng dụng"],
@@ -339,71 +286,45 @@ ENTITY_BENCH: List[BenchItem] = [
     BenchItem(
         prompt   = "Trí tuệ nhân tạo là lĩnh vực thuộc",
         positive = ["khoa học máy tính", "công nghệ thông tin"],
-        negative = ["y học", "nông nghiệp", "nghệ thuật", "thể thao"],
+        negative = ["y học", "nông nghiệp", "nghệ thuật truyền thống", "thể thao"],
     ),
     BenchItem(
         prompt   = "Máy tính được dùng để",
         positive = ["xử lý thông tin", "tính toán", "lưu trữ dữ liệu"],
         negative = ["trồng cây", "chữa bệnh", "xây nhà", "nấu ăn"],
     ),
-    # ── Thiên văn ────────────────────────────────────────────────────────
+    BenchItem(
+        prompt   = "Điện thoại thông minh là",
+        positive = ["thiết bị điện tử", "công cụ liên lạc", "thiết bị di động"],
+        negative = ["dụng cụ nấu ăn", "nhạc cụ", "phương tiện giao thông", "vũ khí"],
+    ),
+
+    # ── Nhóm 5: Thiên văn (2 item) ────────────────────────────────────────
     BenchItem(
         prompt   = "Mặt Trăng là",
-        positive = ["vệ tinh của Trái Đất", "thiên thể"],
-        negative = ["ngôi sao", "hành tinh", "tiểu hành tinh tự do", "sao chổi"],
+        positive = ["vệ tinh của Trái Đất", "thiên thể tự nhiên"],
+        negative = ["ngôi sao", "hành tinh độc lập", "tiểu hành tinh", "sao chổi"],
     ),
     BenchItem(
         prompt   = "Hành tinh Sao Hỏa có màu",
         positive = ["đỏ", "đỏ cam"],
-        negative = ["xanh lam", "vàng", "trắng", "đen"],
+        negative = ["xanh lam", "vàng kim", "trắng bạch", "đen"],
     ),
-    # ── Lịch sử / văn hóa ────────────────────────────────────────────────
-    BenchItem(
-        prompt   = "Chiến tranh thế giới thứ hai kết thúc vào năm",
-        positive = ["1945"],
-        negative = ["1918", "1939", "1950", "1975"],
-    ),
-    BenchItem(
-        prompt   = "Kim tự tháp Giza nằm ở",
-        positive = ["Ai Cập", "Bắc Phi"],
-        negative = ["Hy Lạp", "Iraq", "Iran", "Ấn Độ"],
-    ),
-    # ── Khoa học ─────────────────────────────────────────────────────────
-    BenchItem(
-        prompt   = "Nước sôi ở nhiệt độ",
-        positive = ["100 độ Celsius", "100°C"],
-        negative = ["0 độ Celsius", "37 độ Celsius", "200 độ Celsius"],
-    ),
-    BenchItem(
-        prompt   = "Quang hợp là quá trình",
-        positive = ["thực vật tổng hợp chất hữu cơ từ ánh sáng", "chuyển hóa năng lượng ánh sáng"],
-        negative = ["động vật tiêu hóa thức ăn", "vi khuẩn phân hủy chất hữu cơ",
-                    "con người hít thở oxygen"],
-    ),
-    BenchItem(
-        prompt="Ký hiệu hóa học của bạc là",
-        positive=[" Ag"],
-        negative=[" Au", " Fe", " Cu", " Zn"],
-    ),
-    BenchItem(
-        prompt="Nguyên tố có số hiệu nguyên tử 1 là",
-        positive=[" Hydro"],
-        negative=[" Oxy", " Heli", " Carbon", " Nitơ"],
-    )
 ]
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Cấp 3: Fact — sự kiện không tranh cãi
-# Loại bỏ các fact còn tranh luận (sông dài nhất thế giới: Nile vs Amazon)
+# Cấp 3: Fact — sự kiện không tranh cãi, chỉ có 1 đáp án đúng
+# Tránh: sông dài nhất (Nile vs Amazon tranh luận), thủ đô ít biết
+# Khoảng trắng đầu positive để ghép sát prompt, tránh BPE tokenize khác
 # ══════════════════════════════════════════════════════════════════════════
 
 FACT_BENCH: List[BenchItem] = [
+    # ── Địa lý ───────────────────────────────────────────────────────────
     BenchItem(
         prompt   = "Thủ đô của Việt Nam là",
         positive = [" Hà Nội"],
         negative = [" Thành phố Hồ Chí Minh", " Đà Nẵng", " Huế", " Cần Thơ"],
-        note     = "khoảng trắng đầu để ghép sát prompt, tránh BPE tokenize khác",
     ),
     BenchItem(
         prompt   = "Thủ đô của Pháp là",
@@ -411,24 +332,25 @@ FACT_BENCH: List[BenchItem] = [
         negative = [" London", " Berlin", " Rome", " Madrid"],
     ),
     BenchItem(
-        prompt   = "Hóa học, ký hiệu nguyên tố của vàng là",
-        positive = [" Au"],
-        negative = [" Ag", " Fe", " Cu", " Pt"],
-    ),
-    BenchItem(
-        prompt   = "Hành tinh thứ ba tính từ Mặt Trời là",
-        positive = [" Trái Đất"],
-        negative = [" Sao Hỏa", " Sao Kim", " Sao Mộc", " Sao Thủy"],
-    ),
-    BenchItem(
         prompt   = "Nước láng giềng phía Bắc của Việt Nam là",
         positive = [" Trung Quốc"],
         negative = [" Lào", " Campuchia", " Thái Lan", " Myanmar"],
     ),
     BenchItem(
-        prompt   = "Ngôn ngữ lập trình phổ biến nhất để phân tích dữ liệu là",
-        positive = [" Python"],
-        negative = [" Java", " C++", " JavaScript", " Ruby"],
+        prompt   = "Thủ đô của Nhật Bản là",
+        positive = [" Tokyo"],
+        negative = [" Osaka", " Kyoto", " Hiroshima", " Nagoya"],
+    ),
+    # ── Hóa học / Vật lý ─────────────────────────────────────────────────
+    BenchItem(
+        prompt   = "Ký hiệu hóa học của vàng là",
+        positive = [" Au"],
+        negative = [" Ag", " Fe", " Cu", " Pt"],
+    ),
+    BenchItem(
+        prompt   = "Ký hiệu hóa học của bạc là",
+        positive = [" Ag"],
+        negative = [" Au", " Fe", " Cu", " Zn"],
     ),
     BenchItem(
         prompt   = "Đơn vị đo nhiệt độ trong hệ SI là",
@@ -436,64 +358,68 @@ FACT_BENCH: List[BenchItem] = [
         negative = [" Celsius", " Fahrenheit", " Rankine"],
     ),
     BenchItem(
-        prompt   = "Hành tinh lớn nhất trong hệ Mặt Trời là",
-        positive = [" Sao Mộc"],
-        negative = [" Sao Thổ", " Sao Hải Vương", " Trái Đất", " Sao Hỏa"],
-    ),
-    BenchItem(
-        prompt   = "Con người thuộc loài linh trưởng",
-        positive = [" đúng", " chính xác"],
-        negative = [" sai", " không phải", " nhầm"],
-    ),
-    BenchItem(
         prompt   = "Tốc độ ánh sáng trong chân không xấp xỉ",
         positive = [" 300.000 km/s", " 3×10⁸ m/s"],
         negative = [" 1.000 km/s", " 30.000 km/s", " 3.000.000 km/s"],
     ),
     BenchItem(
-        prompt="Hành tinh gần Mặt Trời nhất là",
-        positive=[" Sao Thủy"],
-        negative=[" Sao Kim", " Trái Đất", " Sao Hỏa"],
+        prompt   = "Nước sôi ở nhiệt độ",
+        positive = [" 100 độ Celsius", " 100°C"],
+        negative = [" 0 độ Celsius", " 37 độ Celsius", " 200 độ Celsius"],
     ),
     BenchItem(
-        prompt="DNA viết tắt của",
-        positive=[" Deoxyribonucleic Acid"],
-        negative=[" Digital Network Access",
-                " Dynamic Numeric Array",
-                " Distributed Neural Architecture"],
+        prompt   = "Đơn vị cơ bản đo khối lượng trong hệ SI là",
+        positive = [" kilogram"],
+        negative = [" gram", " pound", " ounce", " tấn"],
+    ),
+    # ── Thiên văn ─────────────────────────────────────────────────────────
+    BenchItem(
+        prompt   = "Hành tinh thứ ba tính từ Mặt Trời là",
+        positive = [" Trái Đất"],
+        negative = [" Sao Hỏa", " Sao Kim", " Sao Mộc", " Sao Thủy"],
     ),
     BenchItem(
-        prompt="Kim loại lỏng ở nhiệt độ phòng là",
-        positive=[" Thủy ngân"],
-        negative=[" Sắt", " Đồng", " Nhôm", " Bạc"],
+        prompt   = "Hành tinh lớn nhất trong hệ Mặt Trời là",
+        positive = [" Sao Mộc"],
+        negative = [" Sao Thổ", " Sao Hải Vương", " Trái Đất", " Sao Hỏa"],
     ),
     BenchItem(
-        prompt="Trái Đất quay quanh",
-        positive=[" Mặt Trời"],
-        negative=[" Mặt Trăng", " Sao Hỏa", " Sao Mộc"],
+        prompt   = "Hành tinh gần Mặt Trời nhất là",
+        positive = [" Sao Thủy"],
+        negative = [" Sao Kim", " Trái Đất", " Sao Hỏa", " Sao Mộc"],
     ),
     BenchItem(
-        prompt="Đơn vị cơ bản đo khối lượng trong SI là",
-        positive=[" kilogram"],
-        negative=[" gram", " pound", " ounce"],
+        prompt   = "Trái Đất quay quanh",
+        positive = [" Mặt Trời"],
+        negative = [" Mặt Trăng", " Sao Hỏa", " Sao Mộc", " trục của nó"],
+    ),
+    # ── Sinh học ──────────────────────────────────────────────────────────
+    BenchItem(
+        prompt   = "DNA là viết tắt của",
+        positive = [" Deoxyribonucleic Acid"],
+        negative = [" Digital Network Access", " Dynamic Numeric Array", " Direct Neural Architecture"],
     ),
     BenchItem(
-        prompt="Số nguyên tố nhỏ nhất là",
-        positive=[" 2"],
-        negative=[" 1", " 3", " 5", " 7"],
-    )
+        prompt   = "Quang hợp là quá trình",
+        positive = [" thực vật tổng hợp chất hữu cơ từ ánh sáng", " chuyển hóa năng lượng ánh sáng"],
+        negative = [" động vật tiêu hóa thức ăn", " vi khuẩn phân hủy chất hữu cơ", " con người hít thở oxygen"],
+    ),
+    # ── Lịch sử / Toán học ───────────────────────────────────────────────
+    BenchItem(
+        prompt   = "Chiến tranh thế giới thứ hai kết thúc vào năm",
+        positive = [" 1945"],
+        negative = [" 1918", " 1939", " 1950", " 1975"],
+    ),
+    BenchItem(
+        prompt   = "Số nguyên tố nhỏ nhất là",
+        positive = [" 2"],
+        negative = [" 1", " 3", " 5", " 0"],
+    ),
 ]
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Cấp 4: Language Quality — Distinct-1/2 và repetition rate
-#
-# Đo chất lượng sinh văn bản: model có bị mắc kẹt trong vòng lặp cụm từ
-# hay không. Đây là vấn đề rất phổ biến ở giai đoạn đầu pretrain (thường
-# thấy repeat_ratio cao ở 20-40k step, giảm dần khi train tiếp).
-#
-# Distinct-1/2 là số lượng unigram/bigram unique chia cho tổng số token —
-# giá trị cao = đa dạng từ vựng và cấu trúc, thấp = lặp lại.
 # ══════════════════════════════════════════════════════════════════════════
 
 LANGUAGE_PROMPTS = [
@@ -505,137 +431,91 @@ LANGUAGE_PROMPTS = [
     "Sông Hồng chảy qua",
     "Bóng đá là môn thể thao",
     "Khoa học máy tính là",
+    "Văn học Việt Nam có",
+    "Lịch sử Việt Nam bắt đầu",
 ]
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Cấp 5: OOD — generalization ra ngoài phân phối train
-#
-# Nếu Wikipedia tiếng Việt ít đề cập blockchain, robot, NFT... thì đây
-# là thử thách đo khả năng generalize thay vì chỉ memorize.
-# Dùng cùng kiểu log-prob nhưng với các concept ít xuất hiện hơn.
+# 2 nhóm:
+#   A. Topic OOD — concept hiện đại ít xuất hiện trong Wikipedia tiếng Việt
+#   B. Reasoning OOD — từ vựng bịa đặt, đo khả năng suy luận thuần túy
 # ══════════════════════════════════════════════════════════════════════════
 
 OOD_BENCH: List[BenchItem] = [
+
+    # ── Nhóm A: Topic OOD (6 item) ────────────────────────────────────────
     BenchItem(
         prompt   = "Robot là",
-        positive = ["máy móc tự động", "thiết bị cơ điện tử", "máy móc thông minh"],
+        positive = ["máy móc tự động", "thiết bị cơ điện tử"],
         negative = ["sinh vật sống", "loài động vật", "thực vật", "khoáng vật"],
-        note     = "OOD: công nghệ hiện đại, ít xuất hiện trong Wikipedia cũ",
+        note     = "công nghệ hiện đại",
     ),
     BenchItem(
         prompt   = "Blockchain là",
-        positive = ["công nghệ lưu trữ dữ liệu", "chuỗi khối dữ liệu", "công nghệ phi tập trung"],
-        negative = ["loài động vật", "địa danh", "môn thể thao", "nhân vật lịch sử"],
-    ),
-    BenchItem(
-        prompt   = "Đàn guitar là",
-        positive = ["nhạc cụ", "nhạc cụ có dây", "công cụ âm nhạc"],
-        negative = ["loài chim", "vũ khí", "phương tiện giao thông", "loại thực phẩm"],
+        positive = ["công nghệ lưu trữ dữ liệu phân tán", "chuỗi khối"],
+        negative = ["loài động vật", "địa danh", "môn thể thao", "nhạc cụ"],
     ),
     BenchItem(
         prompt   = "Vaccine là",
-        positive = ["chế phẩm sinh học", "biện pháp phòng bệnh", "thuốc phòng ngừa"],
-        negative = ["loại thực phẩm", "loại máy móc", "loại vũ khí", "dụng cụ thể thao"],
+        positive = ["chế phẩm sinh học phòng bệnh", "thuốc phòng ngừa"],
+        negative = ["loại thực phẩm", "loại máy móc", "vũ khí", "dụng cụ thể thao"],
     ),
     BenchItem(
         prompt   = "Năng lượng mặt trời là",
-        positive = ["nguồn năng lượng tái tạo", "nguồn năng lượng sạch", "năng lượng từ ánh sáng"],
-        negative = ["loại nhiên liệu hóa thạch", "loại thực phẩm", "loại khoáng sản", "vũ khí"],
+        positive = ["nguồn năng lượng tái tạo", "năng lượng sạch"],
+        negative = ["nhiên liệu hóa thạch", "khoáng sản", "thực phẩm", "vũ khí"],
     ),
     BenchItem(
         prompt   = "Mạng xã hội là",
-        positive = ["nền tảng kết nối trực tuyến", "công cụ giao tiếp số", "dịch vụ internet"],
-        negative = ["mạng lưới điện", "mạng giao thông", "loài sinh vật", "loại thực phẩm"],
+        positive = ["nền tảng kết nối trực tuyến", "dịch vụ internet"],
+        negative = ["mạng lưới điện", "mạng giao thông đường bộ", "loài sinh vật", "loại thực phẩm"],
     ),
     BenchItem(
-        prompt="Zorb là một loài động vật. Mọi động vật đều là sinh vật. Zorb là",
-        positive=["sinh vật"],
-        negative=["quốc gia", "thành phố", "hành tinh"],
+        prompt   = "Trí tuệ nhân tạo tổng quát là",
+        positive = ["hệ thống AI có khả năng tổng quát", "công nghệ AI tiên tiến"],
+        negative = ["loài động vật", "địa danh", "môn thể thao", "phương tiện giao thông"],
+        note     = "AGI — concept rất mới, ít trong Wikipedia cũ",
     ),
-    BenchItem(
-        prompt="Quark là một loại hạt cơ bản. Mọi hạt cơ bản đều là vật chất. Quark là",
-        positive=["vật chất"],
-        negative=["năng lượng", "sinh vật", "ngôn ngữ"],
-    ),
-    BenchItem(
-        prompt="An là bác sĩ. Mọi bác sĩ đều là nhân viên y tế. Mọi nhân viên y tế đều là người lao động. An là",
-        positive=["người lao động"],
-        negative=["động vật", "thực vật", "hành tinh"],
-    ),
-    BenchItem(
-        prompt="Blen là một loại flar. Mọi flar đều là zent. Mọi zent đều là sinh vật. Blen là",
-        positive=["sinh vật"],
-        negative=["quốc gia", "phần mềm", "thiên hà"],
-    ),
-    BenchItem(
-        prompt="""
-    Loma là một loài động vật.
-    Mọi động vật đều là sinh vật.
 
-    Loma là
-    """,
-        positive=["sinh vật"],
-        negative=["quốc gia","hành tinh","phần mềm"],
+    # ── Nhóm B: Reasoning OOD — từ vựng bịa đặt (6 item) ─────────────────
+    BenchItem(
+        prompt   = "Zorb là một loài động vật. Mọi động vật đều là sinh vật. Zorb là",
+        positive = ["sinh vật"],
+        negative = ["quốc gia", "thành phố", "hành tinh", "phần mềm"],
+        note     = "syllogism 2 bước, từ vựng bịa",
     ),
     BenchItem(
-        prompt="""
-    Kira là bác sĩ.
-    Mọi bác sĩ đều làm việc trong ngành y tế.
-
-    Kira thuộc
-    """,
-        positive=["ngành y tế"],
-        negative=["ngành nông nghiệp","thể thao","hàng không"],
+        prompt   = "Mọi flar đều là zent. Mọi zent đều là sinh vật. Blen là một flar. Blen là",
+        positive = ["sinh vật"],
+        negative = ["quốc gia", "hành tinh", "phần mềm", "thiên hà"],
+        note     = "syllogism 3 bước, từ vựng bịa hoàn toàn",
     ),
     BenchItem(
-        prompt="""
-    Mọi flar đều là zent.
-    Mọi zent đều là sinh vật.
-    Blen là một flar.
-
-    Blen là
-    """,
-        positive=["sinh vật"],
-        negative=["quốc gia","hành tinh","thực vật"],
+        prompt   = "Kira là bác sĩ. Mọi bác sĩ đều làm việc trong ngành y tế. Kira thuộc",
+        positive = ["ngành y tế"],
+        negative = ["ngành nông nghiệp", "ngành thể thao", "ngành hàng không", "ngành giáo dục"],
+        note     = "syllogism với nghề nghiệp thật",
     ),
     BenchItem(
-        prompt="""
-    Mọi nori đều là phương tiện.
-    Mọi phương tiện đều được dùng để di chuyển.
-    Teka là một nori.
-
-    Teka được dùng để
-    """,
-        positive=["di chuyển"],
-        negative=["quang hợp","săn mồi","bay vào vũ trụ"],
+        prompt   = "Mọi nori đều là phương tiện. Mọi phương tiện đều được dùng để di chuyển. Teka là một nori. Teka được dùng để",
+        positive = ["di chuyển"],
+        negative = ["quang hợp", "săn mồi", "lập trình", "nấu ăn"],
+        note     = "syllogism với đặc tính chức năng",
     ),
     BenchItem(
-        prompt="""
-    Mọi vark đều là trilo.
-    Mọi trilo đều là zent.
-    Mọi zent đều là sinh vật.
-
-    Peko là một vark.
-
-    Peko là
-    """,
-        positive=["sinh vật"],
-        negative=["quốc gia","phần mềm","ngọn núi"],
+        prompt   = "Mọi drako đều là máy móc. Mọi máy móc đều phục vụ một mục đích. Lena là một drako. Lena là",
+        positive = ["máy móc", "công cụ"],
+        negative = ["động vật", "thực vật", "hành tinh", "cảm xúc"],
+        note     = "syllogism 2 bước với đặc tính phân loại",
     ),
     BenchItem(
-        prompt="""
-    Mọi drako đều là máy móc.
-    Mọi máy móc đều là công cụ.
-    Mọi công cụ đều phục vụ một mục đích sử dụng.
-
-    Lena là một drako.
-
-    Lena là
-    """,
-        positive=["công cụ"],
-        negative=["động vật","thực vật","hành tinh"],
-    )
+        prompt   = "An là kỹ sư. Mọi kỹ sư đều là người lao động. Mọi người lao động đều có thu nhập. An có",
+        positive = ["thu nhập"],
+        negative = ["vây cá", "cánh chim", "vỏ cây", "nhiệt độ sôi"],
+        note     = "syllogism 3 bước xuyên nhiều đặc tính",
+    ),
 ]
 
 
@@ -677,8 +557,8 @@ def avg_logprob_per_token(
     T     = ids_t.size(1)
     mask  = causal_mask(T, device)
 
-    logits    = model(ids_t, attn_mask=mask)          # (1, T, vocab)
-    log_probs = F.log_softmax(logits[0], dim=-1)      # (T, vocab)
+    logits    = model(ids_t, attn_mask=mask)
+    log_probs = F.log_softmax(logits[0], dim=-1)
 
     n_prompt  = T - len(completion_ids)
     total_lp  = 0.0
@@ -724,7 +604,7 @@ def score_item(
 # ══════════════════════════════════════════════════════════════════════════
 
 @torch.no_grad()
-def _generate_greedy_sample(
+def _generate_sample(
     model,
     tokenizer,
     prompt     : str,
@@ -733,66 +613,49 @@ def _generate_greedy_sample(
     top_k      : int   = 50,
     device     : torch.device = None,
 ) -> list[int]:
-    """Sinh 1 mẫu token bằng sampling (temperature + top-k)."""
     device = device or next(model.parameters()).device
-
     ids = torch.tensor(
         [tokenizer.encode(prompt, add_special_tokens=False)],
         dtype=torch.long, device=device,
     )
-
     from model import causal_mask
     for _ in range(max_new):
         T    = ids.size(1)
         mask = causal_mask(T, device)
         logits = model(ids, attn_mask=mask)
-
         next_logits = logits[:, -1, :] / temperature
         if top_k > 0:
             v, _ = torch.topk(next_logits, min(top_k, next_logits.size(-1)))
             next_logits = next_logits.masked_fill(next_logits < v[:, -1:], float("-inf"))
-
         probs   = F.softmax(next_logits, dim=-1)
         next_id = torch.multinomial(probs, num_samples=1)
         ids     = torch.cat([ids, next_id], dim=1)
-
         if next_id.item() == tokenizer.eos_id:
             break
-
     return ids[0].tolist()
 
 
 def _compute_language_metrics(token_seqs: list[list[int]]) -> dict:
-    """
-    Tính Distinct-1, Distinct-2 và repeat_ratio từ nhiều câu sinh ra.
-
-    Distinct-n = số n-gram unique / tổng số n-gram.
-    repeat_ratio = tỉ lệ token lặp lại liên tiếp (token[i] == token[i-1]).
-    """
-    all_tokens    = []
-    all_bigrams   = []
-    repeat_count  = 0
-    total_tokens  = 0
+    """Distinct-1, Distinct-2, repeat_ratio."""
+    all_tokens, all_bigrams = [], []
+    repeat_count = total_tokens = 0
 
     for seq in token_seqs:
         all_tokens.extend(seq)
         total_tokens += len(seq)
-
         for i in range(len(seq) - 1):
             all_bigrams.append((seq[i], seq[i + 1]))
             if seq[i] == seq[i + 1]:
                 repeat_count += 1
 
-    distinct1 = len(set(all_tokens)) / max(len(all_tokens), 1)
+    distinct1 = len(set(all_tokens))  / max(len(all_tokens),  1)
     distinct2 = len(set(all_bigrams)) / max(len(all_bigrams), 1)
     repeat    = repeat_count / max(total_tokens - 1, 1)
 
     return {
-        "distinct1"   : distinct1,
-        "distinct2"   : distinct2,
-        "repeat_ratio": repeat,
-        # language_score: kết hợp tuyến tính để dùng trong TOTAL_SCORE
-        # Distinct cao → tốt, repeat cao → xấu
+        "distinct1"     : distinct1,
+        "distinct2"     : distinct2,
+        "repeat_ratio"  : repeat,
         "language_score": (distinct1 + distinct2) / 2 - repeat,
     }
 
@@ -806,14 +669,6 @@ def run_language_benchmark(
     device    : torch.device = None,
     verbose   : bool = True,
 ) -> dict:
-    """
-    Chạy language quality benchmark:
-        - Với mỗi prompt, sinh n_samples mẫu
-        - Tổng hợp Distinct-1/2 và repeat_ratio trên tất cả mẫu
-
-    language_score = (distinct1 + distinct2) / 2 - repeat_ratio
-    Giá trị càng cao = sinh văn bản càng đa dạng, ít lặp.
-    """
     model.eval()
     prompts = prompts or LANGUAGE_PROMPTS
     device  = device or next(model.parameters()).device
@@ -827,13 +682,8 @@ def run_language_benchmark(
     for prompt in prompts:
         if hasattr(model, "reset_memory"):
             model.reset_memory(batch_size=1, device=device)
-
         for _ in range(n_samples):
-            seq = _generate_greedy_sample(
-                model, tokenizer, prompt,
-                max_new=max_new, device=device,
-            )
-            # Chỉ lấy phần sinh ra (bỏ phần prompt)
+            seq = _generate_sample(model, tokenizer, prompt, max_new=max_new, device=device)
             prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
             all_seqs.append(seq[prompt_len:])
 
@@ -861,7 +711,6 @@ def run_logprob_benchmark(
     max_seq   : int = 512,
     verbose   : bool = True,
 ) -> float:
-    """Chạy 1 cấp log-prob benchmark. Trả về score trung bình."""
     model.eval()
     scores = []
 
@@ -899,7 +748,6 @@ def run_logprob_benchmark(
 # run_all — chạy đủ 5 chiều và tổng hợp TOTAL_SCORE
 # ══════════════════════════════════════════════════════════════════════════
 
-# Trọng số theo đề xuất: Fact quan trọng nhất (0.30), Language & Semantic cân bằng (0.20)
 WEIGHTS = {
     "semantic": 0.20,
     "entity"  : 0.20,
@@ -913,18 +761,14 @@ def run_all(
     model,
     tokenizer,
     cfg,
-    verbose         : bool = True,
-    step            : int  = None,
-    n_language_samples: int = 5,
+    verbose           : bool = True,
+    step              : int  = None,
+    n_language_samples: int  = 5,
 ) -> dict:
     """
     Chạy toàn bộ 5 cấp benchmark, trả về dict kết quả + TOTAL_SCORE.
 
     TOTAL_SCORE = weighted sum theo WEIGHTS (xem đầu file).
-
-    Lưu ý về language_score: giá trị có thể âm khi model còn lặp nhiều
-    (repeat_ratio cao hơn average distinct). Đây là hành vi đúng — tín hiệu
-    cho thấy model chưa học được đa dạng ngôn ngữ.
 
     Args:
         step              : global_step hiện tại (chỉ để in log)
@@ -1017,7 +861,6 @@ def compare_checkpoints(checkpoint_paths: list[str], verbose: bool = False) -> N
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    # In bảng tổng hợp
     print(f"\n{'═'*88}")
     print(f"  {'CHECKPOINT':<30} {'sem':>6} {'ent':>6} {'fact':>6} "
           f"{'lang':>6} {'ood':>6} {'total':>8}")
