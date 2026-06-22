@@ -48,26 +48,21 @@ Token dạng "O_512", "H_3", "L_999", "C_0" (Open/High/Low/Close + bin số)
 và marker "<chart>"/"</chart>" được nhận diện bằng regex, KHÔNG đi qua
 BPE — mỗi token giá là MỘT ID duy nhất, không bị cắt vụn.
 
-⚠️ RỦI RO ĐàVERIFY — REGEX CÓ THỂ MATCH NHẦM TRONG TEXT TỰ NHIÊN:
+⚠️ BẢO VỆ 2 LỚP CHỐNG MATCH NHẦM:
 
-    "Hằng số H_0 (Hubble)"        -> bị hiểu nhầm thành price token H_0
-    "Phương trình C_1, C_2"       -> bị hiểu nhầm thành price token C_1, C_2
-    "Mẫu vật L_99 tại bảo tàng"   -> bị hiểu nhầm thành price token L_99
-    "Chủng vi khuẩn O_157"        -> bị hiểu nhầm thành price token O_157
+Lớp 1 — strict_chart_mode=True (mặc định):
+    CHỈ nhận diện price token khi nằm trong cặp <chart>...</chart>.
+    Text ngoài cặp marker (kể cả "C_2022", "H_0", "O_157") KHÔNG bao giờ
+    được parse thành price token — an toàn khi trộn corpus sách/Wikipedia
+    với dữ liệu trading.
 
-Đây là vấn đề THẬT nếu bạn train trên dữ liệu CHUNG (Wikipedia/VTSNLP)
-lẫn với dữ liệu trading. Hai hướng xử lý:
+Lớp 2 — bin range validation trong _split_segments_loose:
+    Ngay cả khi nằm trong <chart>...</chart>, token có bin nằm ngoài
+    [0, n_price_bins-1] (ví dụ O_9999 do lỗi encode) sẽ bị bỏ qua thay
+    vì gây KeyError. Đảm bảo không bao giờ crash kể cả khi data lỗi.
 
-    1. Nếu CHỈ train trên dữ liệu trading thuần (không lẫn Wikipedia) —
-       rủi ro này gần như không đáng kể, vì văn bản trading hiếm khi chứa
-       các ký hiệu khoa học dạng "C_1", "H_0" với nghĩa khác.
-
-    2. Nếu TRỘN dữ liệu trading với Wikipedia/corpus chung — nên thêm
-       một marker bắt buộc bao quanh price token (ví dụ chỉ nhận diện
-       price token khi nằm trong cặp <chart>...</chart>, KHÔNG nhận diện
-       price token đứng tự do ngoài cặp marker này). Xem
-       `strict_chart_mode` bên dưới — mặc định TẮT để giữ tương thích với
-       thiết kế gốc, BẬT nếu bạn train trên dữ liệu trộn.
+Tắt strict_chart_mode (False) CHỈ khi train trên dữ liệu trading THUẦN
+(không lẫn corpus chung) — lớp 2 vẫn hoạt động.
 ────────────────────────────────────────────────────────────────────────────
 """
 
@@ -79,7 +74,6 @@ from transformers import AutoTokenizer
 PRICE_TOKEN_RE = re.compile(r"<chart>|</chart>|\b[OHLC]_\d{1,4}\b")
 
 # Regex chỉ nhận diện price token KHI nằm trong cặp <chart>...</chart>
-# Dùng khi strict_chart_mode=True (xem cảnh báo phía trên).
 _CHART_BLOCK_RE = re.compile(r"<chart>.*?</chart>", re.DOTALL)
 
 
@@ -92,21 +86,23 @@ def _build_price_vocab(base_len: int, n_bins: int = 1024) -> dict:
 class VietnameseTokenizer:
     def __init__(
         self,
-        pretrained_name : str = "vinai/phobert-base",
-        use_fast        : bool = False,
-        n_price_bins    : int = 1024,
-        strict_chart_mode: bool = False,
+        pretrained_name  : str = "vinai/phobert-base",
+        use_fast         : bool = False,
+        n_price_bins     : int = 1024,
+        strict_chart_mode: bool = True,   # mặc định True: chỉ parse price token
+                                           # khi nằm trong <chart>...</chart>.
+                                           # Tắt (False) nếu CHỈ train data trading thuần.
     ):
         """
         n_price_bins      : số bin giá cho mỗi loại O/H/L/C (mặc định 1024
                              → tổng 4096 price token + 2 marker = 4098).
-        strict_chart_mode : nếu True, CHỈ nhận diện price token khi nằm
-                             trong cặp <chart>...</chart>; mọi chuỗi dạng
-                             "O_5"/"H_0"/... NẰM NGOÀI cặp marker sẽ được
-                             coi là text thường (qua BPE PhoBERT), tránh
-                             match nhầm với ký hiệu khoa học/toán học
-                             trong corpus chung. BẬT tham số này nếu bạn
-                             train lẫn dữ liệu trading với Wikipedia/VTSNLP.
+        strict_chart_mode : nếu True (mặc định), CHỈ nhận diện price token
+                             khi nằm trong cặp <chart>...</chart>; mọi chuỗi
+                             dạng "O_5"/"H_0"/... NẰM NGOÀI cặp marker sẽ
+                             được coi là text thường (qua BPE PhoBERT), tránh
+                             match nhầm với ký hiệu khoa học/năm tháng/số thứ
+                             tự trong corpus chung (C_2022, H_0, O_157, ...).
+                             Tắt (False) nếu CHỈ train trên dữ liệu trading thuần.
         """
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained_name, use_fast=use_fast)
 
@@ -114,6 +110,7 @@ class VietnameseTokenizer:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         self.strict_chart_mode = strict_chart_mode
+        self.n_price_bins      = n_price_bins
 
         base_len = len(self.tokenizer)
         self.price_vocab     = _build_price_vocab(base_len, n_price_bins)
@@ -136,28 +133,47 @@ class VietnameseTokenizer:
         Tách text thành list (loại, nội dung) theo đúng thứ tự xuất hiện.
         loại ∈ {"text", "price"}.
 
-        strict_chart_mode=False (mặc định, GIỮ NGUYÊN hành vi gốc):
-            Nhận diện price token ở BẤT KỲ ĐÂU trong text — rủi ro match
-            nhầm ký hiệu khoa học (xem cảnh báo đầu file).
-
-        strict_chart_mode=True:
+        strict_chart_mode=True (mặc định):
             CHỈ nhận diện price token khi nằm trong cặp <chart>...</chart>.
-            Phần text ngoài cặp marker được giữ nguyên dạng "text" kể cả
-            khi trùng pattern O_x/H_x/L_x/C_x.
+
+        strict_chart_mode=False:
+            Nhận diện price token ở BẤT KỲ ĐÂU — chỉ dùng khi train data
+            trading thuần (lớp 2 bin validation vẫn hoạt động).
         """
         if not self.strict_chart_mode:
             return self._split_segments_loose(text)
         return self._split_segments_strict(text)
 
     def _split_segments_loose(self, text: str) -> list[tuple[str, str]]:
+        """
+        Parse price token trong đoạn text (không kiểm tra chart boundary).
+        Gọi từ _split_segments_strict chỉ với phần text bên TRONG <chart>...</chart>,
+        hoặc trực tiếp khi strict_chart_mode=False.
+
+        Lớp bảo vệ 2: bỏ qua token OHLC có bin nằm ngoài [0, n_price_bins-1].
+        Ví dụ: C_2022, H_9999 → không có trong price_vocab → skip, giữ là text.
+        pos không tăng khi skip → đoạn text chứa token lỗi được gom vào
+        text segment ở lần match tiếp theo hoặc đoạn cuối (luôn đúng).
+        """
         segments, pos = [], 0
         for m in PRICE_TOKEN_RE.finditer(text):
+            token = m.group(0)
+
+            # Validate bin range cho OHLC token (không áp dụng cho marker tag)
+            if token not in ("<chart>", "</chart>"):
+                try:
+                    if int(token.split("_")[1]) >= self.n_price_bins:
+                        continue   # bin ngoài range → bỏ qua, giữ nguyên là text
+                except (IndexError, ValueError):
+                    continue       # format lạ → bỏ qua an toàn
+
             if m.start() > pos:
                 chunk = text[pos:m.start()]
                 if chunk.strip():
                     segments.append(("text", chunk))
-            segments.append(("price", m.group(0)))
+            segments.append(("price", token))
             pos = m.end()
+
         if pos < len(text):
             chunk = text[pos:]
             if chunk.strip():
@@ -174,7 +190,7 @@ class VietnameseTokenizer:
                 if chunk.strip():
                     segments.append(("text", chunk))
 
-            # Bên TRONG block <chart>...</chart> — parse price token bình thường
+            # Bên TRONG block <chart>...</chart> — parse price token + bin validation
             inner_segs = self._split_segments_loose(block_m.group(0))
             segments.extend(inner_segs)
 
@@ -210,8 +226,7 @@ class VietnameseTokenizer:
         encode() lặp lại nhiều lần (xem cảnh báo PhoBERT Slow tokenizer
         đầu file). Toàn bộ text-chunk của TẤT CẢ câu trong batch được gom
         lại, gọi self.tokenizer() đúng MỘT lần, rồi phân phối lại đúng
-        thứ tự cho từng câu — đã verify bằng test kể cả trường hợp một câu
-        toàn price token (không có text chunk nào).
+        thứ tự cho từng câu.
         """
         all_segs = [self._split_segments(t) for t in texts]
         flat_chunks = [c for segs in all_segs for k, c in segs if k == "text"]
@@ -251,13 +266,7 @@ class VietnameseTokenizer:
 
 
 def load_tokenizer(cfg) -> VietnameseTokenizer:
-    """
-    Entry point để load tokenizer từ TokenizerConfig.
-
-    cfg.tokenizer.strict_chart_mode điều khiển việc price token chỉ được
-    nhận diện trong cặp <chart>...</chart> hay ở bất kỳ đâu — xem cảnh báo
-    đầu file để biết khi nào cần bật True.
-    """
+    """Entry point để load tokenizer từ TokenizerConfig."""
     return VietnameseTokenizer(
         pretrained_name  = cfg.tokenizer.pretrained_name,
         use_fast         = cfg.tokenizer.use_fast,
@@ -275,3 +284,11 @@ if __name__ == "__main__":
     print(f"Tokens : {ids}")
     print(f"Decoded: {tok.decode(ids)}")
     print(f"Vocab  : {tok.vocab_size}")
+
+    # Test bin validation — C_2022 không được parse thành price token
+    tok2 = VietnameseTokenizer(strict_chart_mode=False)
+    ids2 = tok2.encode("Năm C_2022 và O_157")
+    decoded2 = tok2.decode(ids2)
+    print(f"\n[strict=False] 'Năm C_2022 và O_157' → decoded: {decoded2}")
+    assert "<unk_price>" not in decoded2, "C_2022/O_157 không được là price token!"
+    print("✓ Bin validation OK — C_2022 và O_157 được giữ nguyên là text")

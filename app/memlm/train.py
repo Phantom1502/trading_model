@@ -17,7 +17,7 @@ import torch
 
 from config import get_100m_config, get_small_config
 from tokenizer import load_tokenizer
-from dataset import ChunkedWikiLoader, ChunkedVTSNLPLoader
+from dataset import ChunkedWikiLoader, ChunkedVTSNLPLoader, ChunkedParquetLoader
 from model import build_model
 from trainer import run_pretrain
 
@@ -25,61 +25,47 @@ from trainer import run_pretrain
 def main(cfg=None, start_chunk: int = 0, reset_lr_for_new_round: bool = False):
     """
     Args:
-        cfg        : Config object — LUÔN dùng config NÀY để build model và
-                     train, KHÔNG tự động lấy lại config cũ từ checkpoint dù
-                     có resume_from. Đây là điểm quan trọng cần hiểu rõ:
-
-    ────────────────────────────────────────────────────────────────────────
-    TRAIN ROUND MỚI VỚI CONFIG KHÁC — 2 trường hợp:
-
-    Trường hợp 1 — chỉ đổi HYPERPARAMETER TRAIN (lr, warmup, chunk_size,
-    lr_decay_cycle_steps, batch_size...), giữ NGUYÊN kiến trúc model
-    (d_model, n_layers, num_slots, use_memory...):
-
-        cfg = get_100m_config()
-        cfg.train.resume_from = "checkpoints/chunk_33.pt"
-        cfg.train.lr = 1e-4                    # đổi lr cho round mới
-        cfg.train.lr_decay_cycle_steps = 2000  # đổi chu kỳ decay
-        # cfg.model giữ NGUYÊN giống lúc train checkpoint cũ
-        main(cfg, start_chunk=34, reset_lr_for_new_round=True)
-        #                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
-        #  BẮT BUỘC True — nếu không, optimizer.load_state_dict() sẽ phục
-        #  hồi NGUYÊN lr cũ từ checkpoint, cfg.train.lr mới sẽ KHÔNG có
-        #  hiệu lực (đã verify bug này bằng thực nghiệm — xem chi tiết
-        #  trong docstring của run_pretrain() ở trainer/pretrain.py).
-
-    Trường hợp 2 — đổi KIẾN TRÚC MODEL (num_slots, d_model, use_memory...):
-
-        KHÔNG THỂ resume_from checkpoint cũ — state_dict sẽ lỗi
-        "size mismatch" hoặc "Missing/Unexpected key(s)" vì shape các layer
-        không khớp. Phải bắt đầu round mới HOÀN TOÀN TỪ ĐẦU:
-
-        cfg = get_100m_config()
-        cfg.model.num_slots = 8        # đổi kiến trúc
-        cfg.train.resume_from = None   # BẮT BUỘC None — không thể resume
-        cfg.train.save_dir = "checkpoints_round2"  # khuyên đổi thư mục
-                                                      # để không ghi đè round 1
-        main(cfg, start_chunk=0)       # train lại từ chunk 0
-
-    ────────────────────────────────────────────────────────────────────────
-
-    ────────────────────────────────────────────────────────────────────────
-    ĐỔI NGUỒN DỮ LIỆU (Wikipedia → VTSNLP curated dataset):
-
-        cfg = get_100m_config()
-        cfg.data.source = "vtsnlp"
-        # tùy chọn: chỉ lấy một số domain thay vì toàn bộ 25 domain
-        cfg.data.vtsnlp_domains = ["Science", "Books_and_Literature"]
-        main(cfg)
-
-    Lưu ý: đổi source giữa các round train là đổi PHÂN PHỐI DỮ LIỆU, không
-    phải đổi kiến trúc — vẫn RESUME ĐƯỢC bình thường từ checkpoint cũ nếu
-    muốn (model không quan tâm dữ liệu đến từ nguồn nào, chỉ cần cùng
-    tokenizer/vocab). Nhưng nên cân nhắc: trộn dữ liệu khác phân phối giữa
-    các round có thể ảnh hưởng đến tính nhất quán của quá trình học.
-    ────────────────────────────────────────────────────────────────────────
-
+        cfg        : Config object
         start_chunk: chunk muốn bắt đầu/tiếp tục train (0 = từ đầu dataset).
+        reset_lr_for_new_round: True khi muốn lr/scheduler mới có hiệu lực
+                   thật sự (tạo lại optimizer, bỏ qua lr cũ trong checkpoint).
+
+    ────────────────────────────────────────────────────────────────────────
+    NGUỒN DỮ LIỆU:
+
+    Wikipedia (mặc định):
+        cfg.data.source = "wikipedia"
+
+    VTSNLP curated:
+        cfg.data.source = "vtsnlp"
+        cfg.data.vtsnlp_domains = ["Science", "Books_and_Literature"]  # optional
+
+    Local parquet (sách, corpus nội bộ):
+        cfg.data.source           = "parquet"
+        cfg.data.parquet_path     = "data/books.parquet"
+        cfg.data.parquet_text_col = "text"   # đổi nếu cột tên khác
+
+    Lọc parquet theo metadata (filter_fn không serializable — khởi tạo
+    loader thủ công rồi truyền vào run_pretrain qua data_loader_gen):
+        from dataset import ChunkedParquetLoader
+        loader = ChunkedParquetLoader(
+            cfg, tokenizer, "data/books.parquet",
+            filter_fn=lambda s: s.get("genre") == "Lịch sử",
+        )
+        run_pretrain(cfg, model, tokenizer, data_loader_gen=loader)
+
+    ────────────────────────────────────────────────────────────────────────
+    TRAIN ROUND MỚI VỚI CONFIG KHÁC:
+
+    Trường hợp 1 — chỉ đổi hyperparameter train, giữ nguyên kiến trúc:
+        cfg.train.resume_from = "checkpoints/chunk_33.pt"
+        cfg.train.lr = 1e-4
+        main(cfg, start_chunk=34, reset_lr_for_new_round=True)
+
+    Trường hợp 2 — đổi kiến trúc (num_slots, d_model, use_memory, ...):
+        cfg.train.resume_from = None   # KHÔNG thể resume — phải train lại
+        main(cfg, start_chunk=0)
+    ────────────────────────────────────────────────────────────────────────
     """
     if cfg is None:
         cfg = get_100m_config()
@@ -97,7 +83,8 @@ def main(cfg=None, start_chunk: int = 0, reset_lr_for_new_round: bool = False):
     print("\n── Loading tokenizer (PhoBERT) ──")
     tokenizer = load_tokenizer(cfg)
     cfg.model.vocab_size = tokenizer.vocab_size
-    print(f"Vocab size: {tokenizer.vocab_size}")
+    print(f"Vocab size     : {tokenizer.vocab_size}")
+    print(f"strict_chart_mode: {tokenizer.strict_chart_mode}")
 
     # ── Model ──────────────────────────────────────────────────────────────
     print("\n── Building model ──")
@@ -117,12 +104,30 @@ def main(cfg=None, start_chunk: int = 0, reset_lr_for_new_round: bool = False):
         data_loader_gen = ChunkedVTSNLPLoader(
             cfg, tokenizer, start_chunk=start_chunk, domains=cfg.data.vtsnlp_domains
         )
+
     elif cfg.data.source == "wikipedia":
         data_loader_gen = ChunkedWikiLoader(cfg, tokenizer, start_chunk=start_chunk)
+
+    elif cfg.data.source == "parquet":
+        if not cfg.data.parquet_path:
+            raise ValueError(
+                "cfg.data.source='parquet' nhưng cfg.data.parquet_path chưa được đặt.\n"
+                "Ví dụ: cfg.data.parquet_path = 'data/books.parquet'\n"
+                "Nếu cần lọc theo metadata (author, genre, ...), khởi tạo "
+                "ChunkedParquetLoader trực tiếp với filter_fn thay vì dùng main()."
+            )
+        print(f"Parquet: {cfg.data.parquet_path} | cột text: '{cfg.data.parquet_text_col}'")
+        data_loader_gen = ChunkedParquetLoader(
+            cfg, tokenizer,
+            parquet_path=cfg.data.parquet_path,
+            text_col    =cfg.data.parquet_text_col,
+            start_chunk =start_chunk,
+        )
+
     else:
         raise ValueError(
             f"cfg.data.source='{cfg.data.source}' không hợp lệ — "
-            f"chỉ hỗ trợ 'wikipedia' hoặc 'vtsnlp'"
+            f"chỉ hỗ trợ 'wikipedia', 'vtsnlp', hoặc 'parquet'"
         )
 
     # ── Train ──────────────────────────────────────────────────────────────

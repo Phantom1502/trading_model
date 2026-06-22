@@ -25,11 +25,13 @@ class ModelConfig:
 @dataclass
 class DataConfig:
     """Cấu hình dữ liệu và cách load incremental."""
-    # source: "wikipedia" hoặc "vtsnlp"
+    # source: "wikipedia" | "vtsnlp" | "parquet"
     #   "wikipedia" — wikimedia/wikipedia, raw, dùng dataset_name/dataset_subset
     #   "vtsnlp"    — VTSNLP/vietnamese_curated_dataset, đã curate, 12.2M rows,
     #                 chất lượng tốt hơn, có field domain để lọc (xem
     #                 dataset.py::ChunkedVTSNLPLoader để biết danh sách domain)
+    #   "parquet"   — file .parquet local (sách, corpus nội bộ, ...) — xem
+    #                 dataset.py::ChunkedParquetLoader, cần đặt parquet_path
     source         : str = "wikipedia"
 
     dataset_name   : str = "wikimedia/wikipedia"
@@ -38,6 +40,15 @@ class DataConfig:
     # Chỉ áp dụng khi source="vtsnlp". None = lấy tất cả 25 domain.
     # Ví dụ: ["Science", "Books_and_Literature"]
     vtsnlp_domains  : list = None
+
+    # ── Local parquet (sách, corpus nội bộ) ─────────────────────────────
+    # Chỉ áp dụng khi source="parquet".
+    # parquet_path     : đường dẫn tới file .parquet (absolute hoặc relative)
+    # parquet_text_col : tên cột chứa văn bản (mặc định "text")
+    # Lọc theo metadata (author, genre, ...): dùng filter_fn khi khởi tạo
+    # ChunkedParquetLoader trực tiếp thay vì qua main() — xem train.py.
+    parquet_path     : str = ""       # ví dụ: "data/books.parquet"
+    parquet_text_col : str = "text"   # đổi nếu cột text tên khác
 
     chunk_size     : int = 10_000     # số sample load mỗi lần (do RAM ít)
     seg_len        : int = 512        # độ dài 1 segment train (truncated BPTT)
@@ -62,9 +73,6 @@ class TrainConfig:
     # nên dùng "chu kỳ giả định": coi như cứ sau `lr_decay_cycle_steps` step
     # thì lr đã decay hết cosine một vòng, rồi WARM RESTART (quay lại đỉnh,
     # decay tiếp). Đây là kỹ thuật SGDR (cosine annealing with warm restarts).
-    # Nếu train ngắn hơn 1 cycle: lr decay dần như cosine thường, không vấn đề.
-    # Nếu train dài hơn nhiều cycle: lr lặp lại nhịp tăng/giảm — giúp tránh
-    # forget vì lr không bao giờ "đứng yên ở mức cao" mãi mãi.
     lr_decay_cycle_steps : int = 5000
     lr_min_ratio          : float = 0.1   # lr thấp nhất = 0.1 * lr (không về 0 tuyệt đối)
 
@@ -78,68 +86,30 @@ class TrainConfig:
     device                 : str = "cuda"            # tự detect trong code
     mixed_precision         : bool = True
 
-    # M (memory) có giữ nguyên xuyên suốt các chunk hay reset mỗi chunk
-    # True  = đúng ý tưởng "M tích lũy xuyên suốt"
-    # False = M reset mỗi document mới (an toàn hơn, dễ train hơn)
     persist_memory_across_chunks: bool = True
-    reset_memory_per_document    : bool = True   # reset M khi bắt đầu document mới trong cùng chunk
-
-    # GHI CHÚ: bptt_window đã bỏ — model dùng EMA write với alpha CỐ ĐỊNH
-    # (xem model/block.py: half_life trong ModelConfig), nên detach M ngay
-    # mỗi batch là an toàn, không cần BPTT window phức tạp.
+    reset_memory_per_document    : bool = True
 
 
 @dataclass
 class TokenizerConfig:
     """Cấu hình tokenizer."""
-    # PhoBERT tokenizer — pretrained BPE cho tiếng Việt, vocab ~64k
-    # Yêu cầu: pip install transformers
-    # Lưu ý: PhoBERT tokenizer cần input đã qua word-segmentation (VnCoreNLP)
-    #        để đạt hiệu quả tốt nhất, nhưng vẫn chạy được ở chế độ raw text.
-    #
-    # ĐỂ DÙNG TOKENIZER ĐÃ MỞ RỘNG VOCAB QUA add_tokens()
-    # (scripts/add_custom_tokens.py — cách cũ, mở rộng trực tiếp vocab
-    # PhoBERT): đổi pretrained_name thành đường dẫn local tới thư mục
-    # output của script đó:
-    #
-    #     cfg.tokenizer.pretrained_name = "custom_tokenizer"
-    #
-    # AutoTokenizer.from_pretrained() tự nhận diện đây là local path
-    # (không phải tên HuggingFace) nếu thư mục tồn tại — không cần đổi gì
-    # thêm ở chỗ khác trong code.
-    #
-    # ĐỂ DÙNG PRICE TOKEN RIÊNG BIỆT (cách mới — KHÔNG qua add_tokens(),
-    # token giá nằm trong dải ID riêng ngoài vocab PhoBERT gốc, xem
-    # tokenizer.py::VietnameseTokenizer để biết chi tiết thiết kế):
-    # KHÔNG cần đổi pretrained_name — giữ nguyên "vinai/phobert-base" hoặc
-    # tokenizer custom khác, price vocab tự động được cộng thêm vào.
     pretrained_name : str = "vinai/phobert-base"
 
     # use_fast KHÔNG có tác dụng với PhoBERT — đã verify
-    # TOKENIZER_MAPPING_NAMES['phobert'] chỉ map tới PhobertTokenizer
-    # (không có bản Fast). Giữ False để rõ ràng, tránh hiểu lầm True sẽ
-    # nhanh hơn.
     use_fast        : bool = False
 
-    # strict_chart_mode: nếu True, price token (O_x/H_x/L_x/C_x) CHỈ được
-    # nhận diện khi nằm trong cặp <chart>...</chart>; mọi chuỗi trùng
-    # pattern NẰM NGOÀI cặp marker được coi là text thường.
+    # strict_chart_mode=True (mặc định): price token (O_x/H_x/L_x/C_x) CHỈ được
+    # nhận diện khi nằm trong cặp <chart>...</chart>. An toàn khi train lẫn
+    # dữ liệu trading với sách/Wikipedia/VTSNLP — tránh match nhầm các ký
+    # hiệu xuất hiện tự nhiên trong corpus (C_2022 = năm, H_0 = hằng số
+    # Hubble, O_157 = chủng vi khuẩn, ...).
     #
-    # BẬT (True) nếu train LẪN dữ liệu trading với Wikipedia/VTSNLP —
-    # tránh match nhầm các ký hiệu khoa học tự nhiên trong corpus chung
-    # (ví dụ "H_0" = hằng số Hubble, "C_1, C_2" = hằng số tích phân,
-    # "O_157" = chủng vi khuẩn — đã verify các case này bị match nhầm khi
-    # strict_chart_mode=False).
-    #
-    # TẮT (False, mặc định) nếu CHỈ train trên dữ liệu trading thuần —
-    # rủi ro match nhầm gần như không đáng kể trong domain này.
-    strict_chart_mode: bool = False
+    # Tắt (False) CHỈ khi train trên dữ liệu trading THUẦN — lớp 2 bin
+    # validation [0, n_price_bins-1] trong _split_segments_loose vẫn hoạt
+    # động để chặn KeyError kể cả khi data lỗi.
+    strict_chart_mode: bool = True   # mặc định True — an toàn khi trộn corpus
 
     # Số bin giá cho mỗi loại O/H/L/C. Tổng price token = n_price_bins*4 + 2
-    # (4 loại O/H/L/C + 2 marker <chart>/</chart>). Mặc định 1024 bin/loại
-    # → 4098 token, khớp với danh sách 4098 token bạn đã add trước đó qua
-    # add_tokens(). Đổi giá trị này làm vocab_size đổi theo — phải train
-    # lại từ đầu nếu đổi giữa các round (giống mọi thay đổi vocab khác).
     n_price_bins     : int = 1024
 
 

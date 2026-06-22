@@ -4,13 +4,16 @@ dataset.py — Incremental loading cho dữ liệu tiếng Việt
 RAM hạn chế nên không load toàn bộ dataset một lần.
 Thay vào đó: load từng chunk N sample, train xong, giải phóng, load chunk tiếp.
 
-Hỗ trợ 2 nguồn dữ liệu:
-    ChunkedWikiLoader   — wikimedia/wikipedia (bản gốc, field "text")
-    ChunkedVTSNLPLoader — VTSNLP/vietnamese_curated_dataset (đã curate,
-                          field "text" + "domain", chất lượng cao hơn,
-                          12.2M rows, có thể lọc theo domain cụ thể)
+Hỗ trợ 3 nguồn dữ liệu:
+    ChunkedWikiLoader    — wikimedia/wikipedia (bản gốc, field "text")
+    ChunkedVTSNLPLoader  — VTSNLP/vietnamese_curated_dataset (đã curate,
+                           field "text" + "domain", chất lượng cao hơn,
+                           12.2M rows, có thể lọc theo domain cụ thể)
+    ChunkedParquetLoader — file .parquet local (sách, corpus nội bộ, ...)
+                           field "text" + metadata tuỳ chọn (title, author, ...)
+                           hỗ trợ lọc theo metadata qua filter_fn
 
-Cả hai đều là generator — mỗi lần `next()` trả về (train_loader, val_loader)
+Cả ba đều là generator — mỗi lần `next()` trả về (train_loader, val_loader)
 đã tokenize sẵn, sẵn sàng đưa vào train_one_chunk().
 """
 
@@ -29,11 +32,7 @@ class TokenChunkDataset(Dataset):
     """
 
     def __init__(self, documents: list[list[int]], seg_len: int):
-        """
-        documents: list các document, mỗi document là list token_ids
-        seg_len  : độ dài mỗi sample (input). Label = input dịch 1 vị trí.
-        """
-        self.samples = []   # list of (token_ids, is_doc_start)
+        self.samples = []
 
         for doc in documents:
             if len(doc) < 2:
@@ -92,31 +91,22 @@ class _BaseChunkedLoader:
     """
     Logic chung: load N sample từ streaming dataset, tokenize, chia
     train/val, trả về DataLoader. Subclass chỉ cần override
-    `_load_dataset()` (cách load dataset gốc) và `_extract_text(sample)`
-    (cách lấy text + có filter/skip sample đó không).
-
-    Subclass KHÔNG cần override __iter__/__next__/skip-resume logic —
-    toàn bộ phần đó dùng chung, tránh trùng code giữa Wikipedia và VTSNLP.
+    `_load_dataset()` và `_extract_text(sample)`.
     """
 
     def __init__(self, cfg, tokenizer, start_chunk: int = 0):
-        self.cfg          = cfg
+        self.cfg           = cfg
         self.tokenizer     = tokenizer
-        self.chunk_size     = cfg.data.chunk_size
-        self.seg_len         = cfg.data.seg_len
-        self.min_text_len     = cfg.data.min_text_len
-        self.val_ratio         = cfg.data.val_ratio
-        self.batch_size         = cfg.train.batch_size
-        self.total_chunks       = cfg.train.total_chunks
-        self.start_chunk        = start_chunk
+        self.chunk_size    = cfg.data.chunk_size
+        self.seg_len       = cfg.data.seg_len
+        self.min_text_len  = cfg.data.min_text_len
+        self.val_ratio     = cfg.data.val_ratio
+        self.batch_size    = cfg.train.batch_size
+        self.total_chunks  = cfg.train.total_chunks
+        self.start_chunk   = start_chunk
 
         self.raw_stream = self._load_dataset()
 
-        # Resume: skip qua các sample thuộc các chunk đã train.
-        # Đây là skip THEO SỐ SAMPLE THÔ (kể cả sample bị lọc bỏ vì quá
-        # ngắn hoặc không khớp domain), KHÔNG phải theo số document hợp lệ
-        # đã đưa vào chunk trước đó. Sai lệch nhỏ này là đánh đổi chấp nhận
-        # được để tránh tokenize lại toàn bộ dữ liệu chỉ để đếm chính xác.
         if start_chunk > 0:
             n_skip = start_chunk * self.chunk_size
             print(f"Resume: skip {n_skip:,} sample đầu (tương ứng {start_chunk} chunk đã train)...")
@@ -126,35 +116,13 @@ class _BaseChunkedLoader:
         self.exhausted   = False
         self.chunk_count = start_chunk
 
-    # ── Subclass PHẢI override 2 hàm này ───────────────────────────────────
     def _load_dataset(self):
-        """Trả về streaming dataset gốc (chưa skip, chưa iter)."""
         raise NotImplementedError
 
     def _extract_text(self, sample: dict) -> str | None:
-        """
-        Lấy text từ 1 sample thô. Trả về None nếu sample này nên bị bỏ qua
-        (ví dụ không khớp domain mong muốn, hoặc field text rỗng).
-        """
         raise NotImplementedError
 
-    # ── Logic chung — không cần override ───────────────────────────────────
     def _load_one_chunk(self) -> list[list[int]] | None:
-        """
-        Tách 2 pha rõ ràng:
-            Pha 1 — thu thập đủ chunk_size text hợp lệ (lọc theo min_text_len,
-                    domain...), KHÔNG tokenize gì trong pha này.
-            Pha 2 — tokenize TOÀN BỘ list text bằng MỘT lệnh batch duy nhất.
-
-        Lý do quan trọng (đặc biệt với PhoBERT — KHÔNG có Fast tokenizer,
-        chỉ có Slow/Python-backend, xem tokenizer.py để biết chi tiết):
-        gọi tokenizer.encode() RIÊNG LẺ hàng nghìn lần có overhead Python
-        rất lớn (mỗi lệnh phải qua toàn bộ pipeline normalize/pre-tokenize/
-        BPE-merge từ đầu). Gọi MỘT lần với list text tận dụng được tối ưu
-        nội bộ của HuggingFace cho xử lý hàng loạt, nhanh hơn đáng kể dù
-        vẫn cùng một backend Python — đặc biệt quan trọng trên CPU yếu
-        (Colab free tier) nơi single-core clock thấp.
-        """
         texts = []
 
         while len(texts) < self.chunk_size:
@@ -173,9 +141,7 @@ class _BaseChunkedLoader:
         if not texts:
             return None
 
-        # ── Batch tokenize MỘT LẦN cho toàn bộ chunk ──────────────────────
         token_lists = self.tokenizer.encode_batch(texts, add_special_tokens=False)
-
         documents = [ids for ids in token_lists if len(ids) >= 2]
         return documents if documents else None
 
@@ -226,7 +192,7 @@ class _BaseChunkedLoader:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# ChunkedWikiLoader — wikimedia/wikipedia (giữ nguyên hành vi cũ)
+# ChunkedWikiLoader — wikimedia/wikipedia
 # ══════════════════════════════════════════════════════════════════════════
 
 class ChunkedWikiLoader(_BaseChunkedLoader):
@@ -262,12 +228,7 @@ class ChunkedWikiLoader(_BaseChunkedLoader):
 class ChunkedVTSNLPLoader(_BaseChunkedLoader):
     """
     Load VTSNLP/vietnamese_curated_dataset — dataset tiếng Việt đã curate,
-    12.2M rows, field: text, id, domain (25 domain: Science, Internet_and_Telecom,
-    Books_and_Literature, ...).
-
-    Chất lượng văn bản tốt hơn Wikipedia thô (đã qua lọc/làm sạch), và có
-    thể lọc theo domain cụ thể nếu muốn tập trung train vào một lĩnh vực
-    (ví dụ chỉ lấy domain "Science" để tăng tỷ trọng kiến thức khoa học).
+    12.2M rows, field: text, id, domain (25 domain).
 
     Usage — dùng toàn bộ domain:
         loader = ChunkedVTSNLPLoader(cfg, tokenizer)
@@ -275,18 +236,13 @@ class ChunkedVTSNLPLoader(_BaseChunkedLoader):
     Usage — chỉ lấy một số domain cụ thể:
         loader = ChunkedVTSNLPLoader(cfg, tokenizer, domains=["Science", "Books_and_Literature"])
 
-    Resume từ chunk cụ thể (giống ChunkedWikiLoader):
+    Resume từ chunk cụ thể:
         loader = ChunkedVTSNLPLoader(cfg, tokenizer, start_chunk=20)
     """
 
     HF_DATASET_NAME = "VTSNLP/vietnamese_curated_dataset"
 
     def __init__(self, cfg, tokenizer, start_chunk: int = 0, domains: list[str] = None):
-        """
-        domains: list tên domain muốn giữ lại (None = lấy tất cả).
-                 Tên domain xem trong dataset card, ví dụ:
-                 "Science", "Internet_and_Telecom", "Books_and_Literature", ...
-        """
         self.domains = set(domains) if domains else None
         super().__init__(cfg, tokenizer, start_chunk=start_chunk)
 
@@ -302,3 +258,102 @@ class ChunkedVTSNLPLoader(_BaseChunkedLoader):
             return None
         text = sample.get("text", "").strip()
         return text if text else None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ChunkedParquetLoader — file .parquet local (sách, corpus nội bộ, ...)
+# ══════════════════════════════════════════════════════════════════════════
+
+class ChunkedParquetLoader(_BaseChunkedLoader):
+    """
+    Load dataset từ 1 file .parquet LOCAL theo từng chunk — phù hợp với
+    file lớn (>1GB) trên RAM thấp (Colab free tier).
+
+    Dùng HuggingFace datasets streaming mode đọc theo row group của
+    parquet, KHÔNG load toàn bộ file vào RAM một lần.
+
+    Hỗ trợ:
+        - Chọn tên cột text (mặc định "text")
+        - Lọc theo metadata tuỳ ý qua filter_fn (lambda sample → bool)
+        - Resume từ chunk cụ thể (giống ChunkedWikiLoader)
+
+    Usage — đơn giản nhất:
+        loader = ChunkedParquetLoader(cfg, tokenizer, "data/books.parquet")
+
+    Chỉ lấy sách của một tác giả cụ thể:
+        loader = ChunkedParquetLoader(
+            cfg, tokenizer, "data/books.parquet",
+            filter_fn=lambda s: s.get("author") == "Nguyễn Du",
+        )
+
+    Cột text tên khác (ví dụ "content"):
+        loader = ChunkedParquetLoader(
+            cfg, tokenizer, "data/books.parquet",
+            text_col="content",
+        )
+
+    Resume từ chunk 20:
+        loader = ChunkedParquetLoader(
+            cfg, tokenizer, "data/books.parquet",
+            start_chunk=20,
+        )
+
+    Dùng qua config (không có filter_fn):
+        cfg.data.source           = "parquet"
+        cfg.data.parquet_path     = "data/books.parquet"
+        cfg.data.parquet_text_col = "text"
+        main(cfg)
+
+    ────────────────────────────────────────────────────────────────────────
+    Lưu ý kỹ thuật — vì sao dùng HuggingFace thay vì pandas:
+
+    pandas.read_parquet() load TOÀN BỘ file vào RAM một lần — không khả thi
+    với file >1GB trên Colab (thường chỉ có 12GB RAM, còn phải chia cho model
+    và batch). HuggingFace datasets streaming đọc tuần tự theo row group của
+    parquet, mỗi lúc chỉ giữ 1 row group trong RAM (~vài MB).
+
+    skip() khi resume tính theo SỐ ROW THÔ (kể cả row bị filter bỏ) —
+    sai lệch nhỏ này chấp nhận được để tránh scan lại toàn bộ file.
+    ────────────────────────────────────────────────────────────────────────
+    """
+
+    def __init__(
+        self,
+        cfg,
+        tokenizer,
+        parquet_path : str,
+        text_col     : str = "text",
+        start_chunk  : int = 0,
+        filter_fn    = None,   # Callable[[dict], bool] | None
+    ):
+        """
+        parquet_path : đường dẫn tới file .parquet (absolute hoặc relative)
+        text_col     : tên cột chứa nội dung văn bản (mặc định "text")
+        filter_fn    : hàm lọc sample — nhận dict 1 row, trả về True để giữ.
+                       None = lấy tất cả.
+                       Ví dụ: filter_fn=lambda s: s.get("author") == "Nguyễn Du"
+                       Ví dụ: filter_fn=lambda s: s.get("genre") in {"fiction", "history"}
+        """
+        self.parquet_path = parquet_path
+        self.text_col     = text_col
+        self.filter_fn    = filter_fn
+        super().__init__(cfg, tokenizer, start_chunk=start_chunk)
+
+    def _load_dataset(self):
+        return load_dataset(
+            "parquet",
+            data_files={"train": self.parquet_path},
+            split="train",
+            streaming=True,
+        )
+
+    def _extract_text(self, sample: dict) -> str | None:
+        # Bước 1: áp filter metadata nếu có
+        if self.filter_fn is not None and not self.filter_fn(sample):
+            return None
+
+        # Bước 2: lấy text từ đúng cột
+        text = sample.get(self.text_col)
+        if not isinstance(text, str):
+            return None
+        return text.strip() or None
