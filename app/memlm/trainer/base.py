@@ -10,39 +10,26 @@ Các subclass (PretrainTrainer, SFTTrainer, DPOTrainer) override compute_loss().
 ════════════════════════════════════════════════════════════════════════════
 THAY ĐỔI so với phiên bản cũ:
 
-  [FIX 2] Truncated BPTT — detach_memory() KHÔNG còn gọi sau mỗi batch.
-      Thay vào đó trainer đếm số batch kể từ lần detach cuối, và chỉ
-      detach sau mỗi `bptt_window` batch HOẶC khi gặp cuối document.
-
-      Ý nghĩa: gradient được phép chảy ngược qua bptt_window batch liên
-      tiếp, cho phép write_attn học "memory ghi ở window này có giúp ích
-      cho window sau không". Nếu bptt_window=1 thì hành vi giống phiên bản
-      cũ (detach mỗi batch).
-
-      Cấu hình: cfg.train.bptt_window (int, mặc định 4)
-          bptt_window=1  → detach mỗi batch (hành vi cũ, an toàn nhất về RAM)
-          bptt_window=4  → gradient qua 4 window (~2048 token với seg_len=512)
-          bptt_window=8  → gradient dài hơn nhưng RAM tăng gấp đôi
-
-      LƯU Ý: bptt_window > 1 chỉ có ý nghĩa khi dùng sequential_mode=True.
-      Với TokenChunkDataset (shuffle), các batch liên tiếp không thuộc cùng
-      document, giữ gradient qua đó vô nghĩa — nên để bptt_window=1.
+  [FIX 2] Gradient khép kín trong 1 forward pass — không cần bptt_window:
+      block.py lưu self.memory = memory_new.detach() sau mỗi forward.
+      Gradient đã chảy đủ trong batch hiện tại:
+          loss → m_out → read → memory_new → Q_refined → write_attn ✓
+      Graph không tích lũy qua batch → không cần detach_memory() trong train.
+      detach_memory() vẫn giữ trong model API để dùng trong generate/eval.
 
   [FIX 4] reset_memory_rows thay reset_memory khi is_doc_start:
       Phiên bản cũ reset toàn bộ batch khi ANY sample là doc_start.
       Phiên bản mới chỉ reset đúng các sample có is_doc_start=True.
 
 ════════════════════════════════════════════════════════════════════════════
-GHI CHÚ về Memory + Gradient (cập nhật):
+GHI CHÚ về Memory + Gradient:
 
 Model dùng EMA write với alpha CỐ ĐỊNH (xem model/block.py):
     M_new = alpha * M + (1-alpha) * Q_refined
 
-Gradient chảy trong forward pass hiện tại qua đường:
-    loss → read(Q, M_new) → M_new → write_attn → (W_write_q, W_write_k, W_write_v)
-
-Với bptt_window > 1, gradient còn chảy ngược qua M của các batch trước,
-cho write_attn biết "memory đã ghi có giúp ích batch tiếp theo không".
+Gradient trong mỗi batch:
+    loss → read(Q, M_new) → M_new → Q_refined → write_attn ✓
+    self.memory = M_new.detach() — graph cắt ở đây, batch sau dùng giá trị số.
 """
 
 import math
@@ -81,16 +68,8 @@ class BaseTrainer:
         self.chunk_idx      = 0
         self.best_val_loss  = float("inf")
 
-        # [FIX 2] đếm số batch kể từ lần detach memory cuối
-        self._batches_since_detach = 0
-
         self.logger = TrainLogger(log_every=cfg.train.log_every)
         self._setup_scheduler()
-
-    @property
-    def bptt_window(self) -> int:
-        """Số batch giữ gradient xuyên suốt trước khi detach memory."""
-        return getattr(self.cfg.train, "bptt_window", 4)
 
     def _setup_scheduler(self):
         """
@@ -119,40 +98,26 @@ class BaseTrainer:
             ignore_index=-100,
         )
 
-    def _maybe_detach_memory(self, force: bool = False):
-        """
-        [FIX 2] Detach memory theo bptt_window.
-
-        Detach khi:
-            - force=True  : cuối document, ranh giới tự nhiên
-            - _batches_since_detach đã đủ bptt_window
-
-        Không detach khi đang ở giữa window — gradient giữ xuyên suốt.
-        """
-        self._batches_since_detach += 1
-        if force or self._batches_since_detach >= self.bptt_window:
-            self.model.detach_memory()
-            self._batches_since_detach = 0
-
     def train_one_batch(self, batch: dict, accum_step: int) -> float:
         """
         Forward + backward cho MỘT batch.
 
+        Memory tự detach trong block.forward() (self.memory = memory_new.detach()),
+        nên trainer KHÔNG cần gọi detach_memory() — graph không tích lũy qua batch.
+
         Thay đổi so với phiên bản cũ:
             - [FIX 4] reset_memory_rows(mask) chỉ reset sample is_doc_start=True
-            - [FIX 2] detach theo bptt_window thay vì mỗi batch
+            - [FIX 2] không cần detach_memory() trong train loop
         """
         ids          = batch["input_ids"].to(self.device)
         labels       = batch["labels"].to(self.device)
         is_doc_start = batch["is_doc_start"].to(self.device)   # (B,) bool
-        is_doc_end   = batch["is_doc_end"].to(self.device)     # (B,) bool
 
         B, T = ids.shape
 
         # Khởi tạo memory nếu chưa có (đầu training)
         if not self.model.has_memory_initialized(batch_size=B):
             self.model.reset_memory(B, self.device)
-            self._batches_since_detach = 0
 
         # [FIX 4] Chỉ reset memory của sample nào là doc_start thật sự
         elif self.cfg.train.reset_memory_per_document and is_doc_start.any():
@@ -166,10 +131,7 @@ class BaseTrainer:
 
         scaled_loss = loss / self.cfg.train.grad_accum
         self.scaler.scale(scaled_loss).backward()
-
-        # [FIX 2] Detach theo bptt_window — force detach khi kết thúc document
-        force_detach = bool(is_doc_end.any())
-        self._maybe_detach_memory(force=force_detach)
+        # Không cần detach_memory() — block.py đã tự detach sau mỗi forward
 
         if (accum_step + 1) % self.cfg.train.grad_accum == 0:
             self.scaler.unscale_(self.optimizer)

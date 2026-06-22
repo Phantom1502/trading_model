@@ -23,33 +23,33 @@ LUỒNG ĐÃ FIX (so với phiên bản cũ):
           x_new = x + attn_out + m_out        ← loss không chảy vào write_attn
 
       Phiên bản mới:
-          Q_refined = write_attn(memory, Q)   ← write trước
-          memory_mới = EMA(memory_cũ, Q_refined)
-          m_out = read(Q, norm(memory_mới))   ← read từ memory MỚI
-          x_new = x + attn_out + m_out        ← gradient: loss→m_out→memory_mới→Q_refined→write_attn ✓
+          Q_refined  = write_attn(memory, Q)              ← write trước
+          memory_new = EMA(memory_cũ, Q_refined)          ← còn trong graph
+          m_out      = read(Q, norm(memory_new))          ← read từ memory MỚI
+          x_new      = x + attn_out + m_out              ← gradient: loss→m_out→memory_new→Q_refined→write_attn ✓
+          self.memory = memory_new.detach()               ← lưu đã detach, tránh graph tích lũy
 
-  Vòng gradient khép kín trong forward pass hiện tại:
-      loss → m_out → read.Wo/Wv/Wk → memory_mới → Q_refined → write_attn.Wo/Wv/Wk/Wq ✓
+  Gradient khép kín trong 1 forward pass — KHÔNG giữ graph qua batch:
+      loss → m_out → read → memory_new → Q_refined → write_attn ✓
+      self.memory lưu .detach() nên backward() lần sau không bị "graph freed"
 
 Luồng hoàn chỉnh:
     x_normed = RMSNorm(x)
     Q        = Wq(x_normed)
 
-    attn_out = SelfAttentionRoPE(Q)          self-attention + RoPE
+    attn_out = SelfAttentionRoPE(Q)
 
-    [WRITE trước] Q_refined = CrossAttn(Q=norm_w(memory), K=norm_w(Q), V=norm_w(Q))
-    memory_new   = alpha * memory + (1-alpha) * Q_refined    EMA cố định
+    [WRITE] Q_refined  = CrossAttn(Q=norm_w(memory), K=norm_w(Q), V=norm_w(Q))
+            memory_new = alpha * memory + (1-alpha) * Q_refined   [còn graph]
 
-    [READ sau]   m_out = CrossAttn(Q=Q, K=norm_m(memory_new), V=norm_m(memory_new))
+    [READ]  m_out = CrossAttn(Q=Q, K=norm_m(memory_new), V=norm_m(memory_new))
 
     x_new = x + attn_out + m_out
     out   = x_new + SwiGLU(RMSNorm(x_new))
 
-    self.memory = memory_new    lưu lại để dùng cho forward tiếp theo
+    self.memory = memory_new.detach()   ← graph bị cắt ở đây, không tích lũy
 
 ────────────────────────────────────────────────────────────────────────────
-alpha cố định, detach_memory() an toàn — trainer kiểm soát tần suất detach
-qua bptt_window (xem base.py).
 Memory khởi tạo bằng nhiễu nhỏ (std=0.02), KHÔNG dùng zeros tuyệt đối.
 """
 
@@ -181,6 +181,7 @@ class MemoryBlock(nn.Module):
 
         Gradient path (fix vấn đề 1):
             loss → x_new → m_out → read → memory_new → Q_refined → write_attn ✓
+            self.memory = memory_new.detach() → graph không tích lũy qua batch ✓
         """
         B, T, D = x.shape
 
@@ -204,12 +205,12 @@ class MemoryBlock(nn.Module):
                 V=q_for_write,
             )                                          # (B, num_slots, D)
 
-            # EMA update — memory_new vẫn trong computation graph (chưa detach)
+            # EMA update — memory_new còn trong graph để gradient chảy vào write_attn
             memory_new = self.alpha * self.memory + (1 - self.alpha) * Q_refined
 
             # READ: Q token làm Query, memory_new làm Key/Value
             # [FIX 3] Pre-Norm: norm memory_new TRƯỚC khi làm K/V
-            # [FIX 1] Đọc từ memory_new (đã ghi) → gradient chảy vào write_attn
+            # [FIX 1] Đọc từ memory_new → loss→m_out→memory_new→Q_refined→write_attn ✓
             mem_normed = self.norm_m(memory_new)       # (B, num_slots, D)
             m_out      = self.read(
                 Q=Q,
@@ -219,8 +220,9 @@ class MemoryBlock(nn.Module):
 
             x_new = x + attn_out + m_out
 
-            # Lưu memory_new — trainer sẽ detach theo bptt_window
-            self.memory = memory_new
+            # Lưu dưới dạng detach — gradient đã được tính xong trong batch này.
+            # KHÔNG giữ graph qua batch → tránh "backward through graph a second time"
+            self.memory = memory_new.detach()
 
         else:
             x_new = x + attn_out
