@@ -130,8 +130,7 @@ class BaseTrainer:
         scaled_loss = loss / self.cfg.train.grad_accum
         self.scaler.scale(scaled_loss).backward()
 
-        # Detach NGAY — an toàn vì alpha cố định (đã verify thực nghiệm)
-        self.model.detach_memory()
+        
 
         if (accum_step + 1) % self.cfg.train.grad_accum == 0:
             self.scaler.unscale_(self.optimizer)
@@ -139,6 +138,10 @@ class BaseTrainer:
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.optimizer.zero_grad()
+            
+            # Detach NGAY — an toàn vì alpha cố định (đã verify thực nghiệm)
+            self.model.detach_memory()
+        
             self.scheduler.step()
             self.global_step += 1
 
