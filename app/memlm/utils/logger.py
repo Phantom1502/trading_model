@@ -65,3 +65,8 @@ def log_eval(val_loss: float, step: int = None, prefix: str = "  -- "):
     ppl = math.exp(min(val_loss, 20))
     step_str = f"Step {step} | " if step is not None else ""
     print(f"{prefix}{step_str}Val loss: {val_loss:.4f} | ppl: {ppl:.2f}")
+    
+def log_bench(bench: dict, step: int = None, prefix: str = "  -- "):
+    step_str = f"Step {step} | " if step is not None else ""
+    bench_str = " | ".join(f"{k}: {v:.4f}" for k, v in bench.items())
+    print(f"{prefix}{step_str}{bench_str}")

@@ -29,8 +29,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from model import causal_mask
-from utils import TrainLogger, log_eval, save_checkpoint
-
+from utils import TrainLogger, log_eval, log_bench, save_checkpoint
+from benchmark import run_all
 
 class BaseTrainer:
     def __init__(self, cfg, model, tokenizer):
@@ -198,6 +198,9 @@ class BaseTrainer:
                             self.global_step, self.chunk_idx, val_loss,
                             model_cfg=self.cfg.model,
                         )
+                        
+                    bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
+                    log_bench(bench, step=self.global_step)
 
                 if self.global_step > 0 and self.global_step % self.cfg.train.save_every == 0:
                     save_checkpoint(
