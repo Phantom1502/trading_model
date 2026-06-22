@@ -50,6 +50,18 @@ class DataConfig:
     parquet_path     : str = ""       # ví dụ: "data/books.parquet"
     parquet_text_col : str = "text"   # đổi nếu cột text tên khác
 
+    # ── Sequential / sliding window mode ────────────────────────────────
+    # sequential_mode=True: dùng SequentialDocumentDataset — M thực sự
+    # carry-over xuyên suốt document thay vì reset sau mỗi segment.
+    # Bật khi train document dài (sách, bài báo) để M học context dài.
+    sequential_mode : bool = False
+
+    # Stride của sliding window (chỉ dùng khi sequential_mode=True).
+    # None = seg_len (không overlap, tương đương TokenChunkDataset).
+    # seg_len // 2 = overlap 50% — nhiều window hơn, M học kỹ hơn.
+    # seg_len // 4 = overlap 75% — phù hợp document rất dài (tiểu thuyết).
+    window_stride   : int  = None
+
     chunk_size     : int = 10_000     # số sample load mỗi lần (do RAM ít)
     seg_len        : int = 512        # độ dài 1 segment train (truncated BPTT)
     min_text_len   : int = 200        # bỏ qua sample quá ngắn

@@ -609,6 +609,32 @@ OOD_BENCH: List[BenchItem] = [
     """,
         positive=["di chuyển"],
         negative=["quang hợp","săn mồi","bay vào vũ trụ"],
+    ),
+    BenchItem(
+        prompt="""
+    Mọi vark đều là trilo.
+    Mọi trilo đều là zent.
+    Mọi zent đều là sinh vật.
+
+    Peko là một vark.
+
+    Peko là
+    """,
+        positive=["sinh vật"],
+        negative=["quốc gia","phần mềm","ngọn núi"],
+    ),
+    BenchItem(
+        prompt="""
+    Mọi drako đều là máy móc.
+    Mọi máy móc đều là công cụ.
+    Mọi công cụ đều phục vụ một mục đích sử dụng.
+
+    Lena là một drako.
+
+    Lena là
+    """,
+        positive=["công cụ"],
+        negative=["động vật","thực vật","hành tinh"],
     )
 ]
 
