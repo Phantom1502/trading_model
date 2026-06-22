@@ -131,7 +131,9 @@ class SequentialDocumentDataset(Dataset):
         if stride is None:
             stride = seg_len
 
-        doc_list = [d for d in documents if len(d) >= seg_len + 1]
+        # Đoạn này sẽ bỏ khá nhiều document ngắn
+        # doc_list = [d for d in documents if len(d) >= seg_len + 1] 
+        doc_list = [d for d in documents if len(d) >= 2]
         if shuffle_docs:
             random.shuffle(doc_list)
 
