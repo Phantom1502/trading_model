@@ -7,20 +7,42 @@ Class này chứa:
     - evaluate loop
 Các subclass (PretrainTrainer, SFTTrainer, DPOTrainer) override compute_loss().
 
-────────────────────────────────────────────────────────────────────────────
-GHI CHÚ QUAN TRỌNG về Memory + Gradient:
+════════════════════════════════════════════════════════════════════════════
+THAY ĐỔI so với phiên bản cũ:
+
+  [FIX 2] Truncated BPTT — detach_memory() KHÔNG còn gọi sau mỗi batch.
+      Thay vào đó trainer đếm số batch kể từ lần detach cuối, và chỉ
+      detach sau mỗi `bptt_window` batch HOẶC khi gặp cuối document.
+
+      Ý nghĩa: gradient được phép chảy ngược qua bptt_window batch liên
+      tiếp, cho phép write_attn học "memory ghi ở window này có giúp ích
+      cho window sau không". Nếu bptt_window=1 thì hành vi giống phiên bản
+      cũ (detach mỗi batch).
+
+      Cấu hình: cfg.train.bptt_window (int, mặc định 4)
+          bptt_window=1  → detach mỗi batch (hành vi cũ, an toàn nhất về RAM)
+          bptt_window=4  → gradient qua 4 window (~2048 token với seg_len=512)
+          bptt_window=8  → gradient dài hơn nhưng RAM tăng gấp đôi
+
+      LƯU Ý: bptt_window > 1 chỉ có ý nghĩa khi dùng sequential_mode=True.
+      Với TokenChunkDataset (shuffle), các batch liên tiếp không thuộc cùng
+      document, giữ gradient qua đó vô nghĩa — nên để bptt_window=1.
+
+  [FIX 4] reset_memory_rows thay reset_memory khi is_doc_start:
+      Phiên bản cũ reset toàn bộ batch khi ANY sample là doc_start.
+      Phiên bản mới chỉ reset đúng các sample có is_doc_start=True.
+
+════════════════════════════════════════════════════════════════════════════
+GHI CHÚ về Memory + Gradient (cập nhật):
 
 Model dùng EMA write với alpha CỐ ĐỊNH (xem model/block.py):
-    M_new = alpha * M + (1-alpha) * Q
+    M_new = alpha * M + (1-alpha) * Q_refined
 
-Đã verify bằng thực nghiệm: vì alpha không phải tham số học được,
-detach_memory() NGAY SAU MỖI BATCH là an toàn — không làm mất tín hiệu
-gradient cho Wq, W_self, W_mread (các trọng số này đều có đường tắt
-trực tiếp tới loss trong CHÍNH batch hiện tại).
+Gradient chảy trong forward pass hiện tại qua đường:
+    loss → read(Q, M_new) → M_new → write_attn → (W_write_q, W_write_k, W_write_v)
 
-Vì vậy trainer này quay lại cấu trúc đơn giản: forward → backward → detach
-mỗi batch, KHÔNG cần BPTT window phức tạp như khi alpha học được.
-────────────────────────────────────────────────────────────────────────────
+Với bptt_window > 1, gradient còn chảy ngược qua M của các batch trước,
+cho write_attn biết "memory đã ghi có giúp ích batch tiếp theo không".
 """
 
 import math
@@ -31,6 +53,7 @@ import torch.nn.functional as F
 from model import causal_mask
 from utils import TrainLogger, log_eval, log_bench, save_checkpoint
 from benchmark import run_all
+
 
 class BaseTrainer:
     def __init__(self, cfg, model, tokenizer):
@@ -54,43 +77,35 @@ class BaseTrainer:
             "cuda", enabled=(self.device.type == "cuda" and cfg.train.mixed_precision)
         )
 
-        self.global_step   = 0
+        self.global_step    = 0
         self.chunk_idx      = 0
-        self.best_val_loss   = float("inf")
+        self.best_val_loss  = float("inf")
+
+        # [FIX 2] đếm số batch kể từ lần detach memory cuối
+        self._batches_since_detach = 0
 
         self.logger = TrainLogger(log_every=cfg.train.log_every)
         self._setup_scheduler()
 
+    @property
+    def bptt_window(self) -> int:
+        """Số batch giữ gradient xuyên suốt trước khi detach memory."""
+        return getattr(self.cfg.train, "bptt_window", 4)
+
     def _setup_scheduler(self):
         """
-        Warmup tuyến tính rồi cosine decay theo CHU KỲ GIẢ ĐỊNH
+        Warmup tuyến tính rồi cosine decay theo chu kỳ giả định
         (lr_decay_cycle_steps), lặp lại "warm restart" khi hết chu kỳ.
-
-        Lý do: dataset là streaming, không biết trước total_steps thật.
-        Coi mỗi `lr_decay_cycle_steps` step là một "epoch giả định":
-            - warmup ở đầu mỗi cycle
-            - cosine decay xuống lr_min_ratio * lr ở cuối cycle
-            - rồi nhảy về đỉnh, lặp lại (SGDR — Stochastic Gradient Descent
-              with Warm Restarts)
-
-        Hiện tượng forget bạn quan sát thường do lr giữ NGUYÊN ở mức cao
-        sau warmup mãi mãi — model liên tục "ghi đè mạnh" lên trọng số bằng
-        gradient lớn, không bao giờ có giai đoạn lr thấp để ổn định những gì
-        đã học. Decay định kỳ giải quyết đúng vấn đề này; warm restart giúp
-        model không bị kẹt ở lr quá thấp mãi mãi khi train cực dài.
         """
-        warmup       = self.cfg.train.warmup_steps
-        cycle_steps  = self.cfg.train.lr_decay_cycle_steps
-        min_ratio    = self.cfg.train.lr_min_ratio
+        warmup      = self.cfg.train.warmup_steps
+        cycle_steps = self.cfg.train.lr_decay_cycle_steps
+        min_ratio   = self.cfg.train.lr_min_ratio
 
         def lr_lambda(step):
             if step < warmup:
                 return step / max(warmup, 1)
-
-            # Vị trí trong chu kỳ hiện tại (sau khi trừ warmup ban đầu)
             step_in_cycle = (step - warmup) % cycle_steps
             progress      = step_in_cycle / max(cycle_steps, 1)
-
             cosine = 0.5 * (1 + math.cos(math.pi * progress))
             return min_ratio + (1 - min_ratio) * cosine
 
@@ -104,22 +119,44 @@ class BaseTrainer:
             ignore_index=-100,
         )
 
+    def _maybe_detach_memory(self, force: bool = False):
+        """
+        [FIX 2] Detach memory theo bptt_window.
+
+        Detach khi:
+            - force=True  : cuối document, ranh giới tự nhiên
+            - _batches_since_detach đã đủ bptt_window
+
+        Không detach khi đang ở giữa window — gradient giữ xuyên suốt.
+        """
+        self._batches_since_detach += 1
+        if force or self._batches_since_detach >= self.bptt_window:
+            self.model.detach_memory()
+            self._batches_since_detach = 0
+
     def train_one_batch(self, batch: dict, accum_step: int) -> float:
         """
-        Forward + backward cho MỘT batch. Detach M ngay sau backward —
-        an toàn vì alpha (EMA decay) cố định, không cần gradient xuyên-batch.
+        Forward + backward cho MỘT batch.
+
+        Thay đổi so với phiên bản cũ:
+            - [FIX 4] reset_memory_rows(mask) chỉ reset sample is_doc_start=True
+            - [FIX 2] detach theo bptt_window thay vì mỗi batch
         """
         ids          = batch["input_ids"].to(self.device)
         labels       = batch["labels"].to(self.device)
-        is_doc_start = batch["is_doc_start"]
+        is_doc_start = batch["is_doc_start"].to(self.device)   # (B,) bool
+        is_doc_end   = batch["is_doc_end"].to(self.device)     # (B,) bool
 
         B, T = ids.shape
 
-        # Reset M nếu đây là đoạn đầu của document mới
-        if self.cfg.train.reset_memory_per_document and is_doc_start.any():
+        # Khởi tạo memory nếu chưa có (đầu training)
+        if not self.model.has_memory_initialized(batch_size=B):
             self.model.reset_memory(B, self.device)
-        elif not self.model.has_memory_initialized(batch_size=B):
-            self.model.reset_memory(B, self.device)
+            self._batches_since_detach = 0
+
+        # [FIX 4] Chỉ reset memory của sample nào là doc_start thật sự
+        elif self.cfg.train.reset_memory_per_document and is_doc_start.any():
+            self.model.reset_memory_rows(is_doc_start, self.device)
 
         mask = causal_mask(T, self.device)
 
@@ -130,8 +167,9 @@ class BaseTrainer:
         scaled_loss = loss / self.cfg.train.grad_accum
         self.scaler.scale(scaled_loss).backward()
 
-        # Detach NGAY — an toàn vì alpha cố định (đã verify thực nghiệm)
-        self.model.detach_memory()
+        # [FIX 2] Detach theo bptt_window — force detach khi kết thúc document
+        force_detach = bool(is_doc_end.any())
+        self._maybe_detach_memory(force=force_detach)
 
         if (accum_step + 1) % self.cfg.train.grad_accum == 0:
             self.scaler.unscale_(self.optimizer)
@@ -155,11 +193,13 @@ class BaseTrainer:
 
             ids          = batch["input_ids"].to(self.device)
             labels       = batch["labels"].to(self.device)
-            is_doc_start = batch["is_doc_start"]
-            B, T = ids.shape
+            is_doc_start = batch["is_doc_start"].to(self.device)
+            B, T         = ids.shape
 
-            if is_doc_start.any() or not self.model.has_memory_initialized(batch_size=B):
+            if not self.model.has_memory_initialized(batch_size=B):
                 self.model.reset_memory(B, self.device)
+            elif is_doc_start.any():
+                self.model.reset_memory_rows(is_doc_start, self.device)
 
             mask   = causal_mask(T, self.device)
             logits = self.model(ids, attn_mask=mask)
@@ -167,13 +207,13 @@ class BaseTrainer:
 
             total += loss.item()
             n     += 1
-            self.model.detach_memory()
+            self.model.detach_memory()   # eval luôn detach mỗi batch
 
         self.model.train()
         return total / max(n, 1)
 
     def train_one_chunk(self, train_loader, val_loader, chunk_idx: int):
-        """Train trên một chunk data (gọi từ pretrain.py)."""
+        """Train trên một chunk data."""
         self.model.train()
         self.chunk_idx = chunk_idx
 
@@ -198,7 +238,7 @@ class BaseTrainer:
                             self.global_step, self.chunk_idx, val_loss,
                             model_cfg=self.cfg.model,
                         )
-                        
+
                     bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
                     log_bench(bench, step=self.global_step)
 

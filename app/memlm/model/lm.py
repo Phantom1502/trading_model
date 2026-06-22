@@ -10,6 +10,13 @@ model/lm.py — MemoryLM hoàn chỉnh (LLaMA-style)
                              trong self-attention của từng block.
     - Scaled init         : truyền n_layers xuống từng MemoryBlock để tự
                              scale init các projection trên đường residual.
+
+════════════════════════════════════════════════════════════════════════════
+THAY ĐỔI so với phiên bản cũ:
+
+    reset_memory_rows(mask, device) — reset memory CHỈ cho các sample
+    có is_doc_start=True thay vì reset toàn bộ batch [FIX 4].
+    Trainer gọi hàm này thay vì reset_memory().
 """
 
 import torch
@@ -41,7 +48,6 @@ class MemoryLM(nn.Module):
         self.max_seq    = max_seq
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
-        # KHÔNG còn pos_emb — RoPE thay thế absolute position embedding
         self.drop      = nn.Dropout(dropout)
 
         self.blocks = nn.ModuleList([
@@ -56,7 +62,6 @@ class MemoryLM(nn.Module):
         self.lm_head  = nn.Linear(d_model, vocab_size, bias=False)
         self.lm_head.weight = self.token_emb.weight   # weight tying
 
-        # Precompute bảng RoPE — đăng ký làm buffer để tự chuyển device cùng model
         d_head = d_model // n_heads
         freqs_cis = precompute_freqs_cis(d_head, max_seq * 2, base=rope_base)
         self.register_buffer("freqs_cis", freqs_cis, persistent=False)
@@ -65,15 +70,6 @@ class MemoryLM(nn.Module):
 
     def _init_weights(self):
         nn.init.normal_(self.token_emb.weight, std=0.02)
-        # std=0.02 mặc định cho mọi Linear (Wq, Wk, Wv, w1, w3, ...).
-        # Các layer trên đường residual (Wo, w2) đã được _scaled_init() trong
-        # MemoryBlock.__init__ ghi đè SAU bước này (xem thứ tự gọi: mỗi
-        # MemoryBlock tự gọi _scaled_init ở cuối __init__ của chính nó,
-        # trước khi MemoryLM._init_weights() chạy) — nên ở đây init lại std=0.02
-        # cho TẤT CẢ Linear sẽ vô tình ghi đè luôn cả phần đã scaled.
-        # Do đó: chỉ init Linear nằm NGOÀI block (không có ở đây, lm_head dùng
-        # weight tying nên không cần). Hàm này chỉ còn init token_emb.
-        pass
 
     def num_params(self, trainable_only: bool = False) -> int:
         if trainable_only:
@@ -81,14 +77,28 @@ class MemoryLM(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
     # ── Memory management ────────────────────────────────────────────────
+
     def reset_memory(self, batch_size: int, device: torch.device):
-        """Reset M về trạng thái khởi tạo — gọi khi bắt đầu document mới."""
+        """Reset toàn bộ memory — gọi khi bắt đầu document mới (batch_size=1)
+        hoặc khi chưa có memory nào."""
         if self.use_memory:
             for block in self.blocks:
                 block.reset_memory(batch_size, device)
 
+    def reset_memory_rows(self, mask: torch.Tensor, device: torch.device):
+        """
+        [FIX 4] Reset memory CHỈ cho các sample có mask=True.
+
+        mask: (B,) bool tensor — thường là batch["is_doc_start"]
+        Gọi hàm này thay vì reset_memory() để tránh xóa oan memory
+        của các sample không phải doc_start trong cùng batch.
+        """
+        if self.use_memory:
+            for block in self.blocks:
+                block.reset_memory_rows(mask, device)
+
     def detach_memory(self):
-        """Cắt gradient của M giữa các segment — truncated BPTT."""
+        """Cắt gradient của memory — trainer gọi theo bptt_window."""
         if self.use_memory:
             for block in self.blocks:
                 block.detach_memory()
@@ -102,7 +112,8 @@ class MemoryLM(nn.Module):
             return all(b.memory.size(0) == batch_size for b in self.blocks)
         return True
 
-    # ── Forward ───────────────────────────────────────────────────────────
+    # ── Forward ──────────────────────────────────────────────────────────
+
     def forward(self, input_ids: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
         """
         input_ids: (B, T)
@@ -114,7 +125,6 @@ class MemoryLM(nn.Module):
         if self.use_memory and not self.has_memory_initialized(batch_size=B):
             self.reset_memory(B, device)
 
-        # Không còn cộng pos_emb — vị trí được mã hóa qua RoPE bên trong mỗi block
         x = self.drop(self.token_emb(input_ids))
 
         freqs_cis = self.freqs_cis.to(device)
@@ -144,4 +154,5 @@ def build_model(cfg) -> MemoryLM:
         max_seq    = cfg.model.max_seq,
         dropout    = cfg.model.dropout,
         use_memory = cfg.model.use_memory,
+        rope_base  = getattr(cfg.model, "rope_base", 10000.0),
     )
