@@ -202,6 +202,7 @@ class BaseTrainer:
                         )
 
                     bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
+                    self.model.train()   # [FIX] benchmark gọi model.eval() bên trong nhưng không restore
                     log_bench(bench, step=self.global_step)
 
                 if self.global_step > 0 and self.global_step % self.cfg.train.save_every == 0:
