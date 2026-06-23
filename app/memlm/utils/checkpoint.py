@@ -147,3 +147,64 @@ def hf_upload_latest(
     except Exception as e:
         print(f"  ⚠ hf_upload_latest failed (training tiếp tục bình thường): {e}")
         return False
+    
+def hf_download_latest(
+    repo_id     : str,
+    local_path  : str,
+    token       : str = None,
+    filename    : str = "last_chunk.pt",
+) -> bool:
+    """
+    Download checkpoint từ HuggingFace Hub về máy local (mặc định lấy file "last_chunk.pt").
+    Ghi đè file local nếu đã tồn tại để tiết kiệm không gian lưu trữ.
+
+    Args:
+        repo_id    : "username/repo-name" trên HuggingFace
+        local_path : đường dẫn local muốn lưu file (ví dụ: "./checkpoints/resume_chunk.pt")
+        token      : HF token. Nếu None, đọc từ env HF_TOKEN hoặc cache của hệ thống.
+        filename   : tên file cần kéo trên HF repo (mặc định "last_chunk.pt")
+
+    Returns:
+        True nếu download thành công, False nếu có lỗi (in cảnh báo, không raise).
+    """
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError:
+        print("  ⚠ hf_download_latest: huggingface_hub chưa cài. "
+              "Chạy: pip install huggingface_hub")
+        return False
+
+    # Ưu tiên: tham số > env var > cache từ huggingface-cli login
+    _token = token or os.environ.get("HF_TOKEN")
+
+    # Đảm bảo thư mục chứa file local tồn tại sẵn
+    local_dir = os.path.dirname(local_path)
+    if local_dir and not os.path.exists(local_dir):
+        os.makedirs(local_dir, exist_ok=True)
+
+    try:
+        print(f"  ⬇ Đang kéo file hf:///{repo_id}/{filename}...")
+        
+        # Tải file từ HF Hub thẳng về đường dẫn local mong muốn
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            repo_type="model",
+            token=_token,
+            local_dir=local_dir if local_dir else ".",
+            local_dir_use_symlinks=False, # Tránh dùng symlink để file vật lý nằm đúng chỗ
+        )
+        
+        # Đổi tên file từ cache cấu trúc của HF sang chính xác local_path mong muốn (nếu cần)
+        downloaded_path = os.path.join(local_dir if local_dir else ".", filename)
+        if downloaded_path != local_path:
+            if os.path.exists(local_path):
+                os.remove(local_path) # Xóa file cũ trước khi rename để tránh xung đột trên Windows
+            os.rename(downloaded_path, local_path)
+
+        print(f"  ✓ Download thành công! File đã được lưu tại: {local_path}")
+        return True
+
+    except Exception as e:
+        print(f"  ⚠ hf_download_latest failed (tiến trình tiếp tục bình thường): {e}")
+        return False
