@@ -1,9 +1,8 @@
 {
-  "backend": "tokenizers",
   "bos_token": "<s>",
   "eos_token": "</s>",
   "mask_token": "<mask>",
-  "model_max_length": 1000000000000000019884624838656,
+  "model_max_length": 1024,
   "pad_token": "<pad>",
   "unk_token": "<unk>",
   "model_type": "gpt2"
