@@ -164,3 +164,18 @@ def get_100m_config() -> Config:
     cfg.train.batch_size = 8
     cfg.train.grad_accum = 4
     return cfg
+
+def get_110m_config() -> Config:
+    """Config ~110M params tối ưu cho Colab T4."""
+    cfg = Config()
+    cfg.model.d_model   = 768      # Tăng từ 512 -> 768
+    cfg.model.n_heads   = 12       # Tăng từ 8 -> 12 (để 768 / 12 = 64)
+    cfg.model.n_layers  = 12       # Tăng từ 8 -> 12
+    cfg.model.max_seq   = 1024     
+    
+    cfg.data.chunk_size = 10_000
+    
+    # Điều chỉnh Train để tránh OOM trên T4
+    cfg.train.batch_size = 8       # Giảm batch size xuống một chút vì mô hình to hơn
+    cfg.train.grad_accum = 4       # Tăng grad_accum để giữ nguyên Effective Batch Size = 32
+    return cfg
