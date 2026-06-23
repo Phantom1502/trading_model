@@ -215,4 +215,7 @@ class BaseTrainer:
 
         val_loss = self.evaluate(val_loader)
         log_eval(val_loss, step=self.global_step, prefix="  [Chunk end] ")
+        
+        bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
+        log_bench(bench, step=self.global_step)
         return val_loss
