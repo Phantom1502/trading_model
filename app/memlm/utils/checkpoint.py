@@ -28,7 +28,9 @@ def save_checkpoint(
     build model với config mặc định, gây lỗi "Missing key(s) in state_dict"
     hoặc "Unexpected key(s)" khi kiến trúc lúc train và lúc load khác nhau.
     """
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
 
     ckpt = {
         "model"      : model.state_dict(),
