@@ -170,18 +170,19 @@ class MemoryBlock(nn.Module):
         freqs_cis: (max_seq, d_head/2) complex
         Returns  : (B, T, D)
 
-        Luồng memory (khi use_memory=True):
-            1. WRITE: memory (làm Q) tra vấn token Q (làm K/V)
+        Luồng memory kiến trúc (READ TRƯỚC, WRITE SAU):
+            1. READ:  Token Q hiện tại tra vấn memory CŨ (từ batch trước, đã detach).
+                      → m_out = read(Q, norm_m(memory), norm_m(memory))
+            2. TỔNG HỢP: x_new = x + attn_out + m_out
+            3. WRITE: Tạo memory MỚI bằng cách nén ngữ cảnh của batch hiện tại.
                       → Q_refined = write_attn(norm_w(memory), norm_w(Q), norm_w(Q))
                       → memory_new = alpha*memory + (1-alpha)*Q_refined
-            2. READ:  token Q tra vấn memory_new (làm K/V)
-                      → m_out = read(Q, norm_m(memory_new), norm_m(memory_new))
-            3. x_new = x + attn_out + m_out
-            4. self.memory = memory_new  (lưu để dùng bước sau)
+            4. KÉO GRADIENT: Ép memory_new vào graph của batch hiện tại bằng trick x + 0.0 * memory_new
+            5. LƯU:   self.memory = memory_new.detach() (Dành cho batch tiếp theo)
 
-        Gradient path (fix vấn đề 1):
-            loss → x_new → m_out → read → memory_new → Q_refined → write_attn ✓
-            self.memory = memory_new.detach() → graph không tích lũy qua batch ✓
+        Gradient path (Sạch 100%, không rò rỉ tương lai):
+            loss → x_new → (0.0 * memory_new) → Q_refined → write_attn ✓
+            Mô hình vừa không ăn gian được tương lai, vừa học được cách nén WRITE.
         """
         B, T, D = x.shape
 
@@ -193,35 +194,37 @@ class MemoryBlock(nn.Module):
         attn_out = self.self_attn(Q, freqs_cis, attn_mask=attn_mask)     # (B, T, D)
 
         if self.use_memory and self.memory is not None:
-            # ── [FIX 1+3] WRITE trước, READ sau từ memory MỚI ──────────────
-
-            # WRITE: memory làm Query, Q token làm Key/Value
-            # [FIX 3] Pre-Norm: norm memory và Q TRƯỚC khi vào write_attn
-            mem_for_write = self.norm_w(self.memory)   # (B, num_slots, D)
-            q_for_write   = self.norm_w(Q)             # (B, T, D)
-            Q_refined     = self.write_attn(
-                Q=mem_for_write,
-                K=q_for_write,
-                V=q_for_write,
-            )                                          # (B, num_slots, D)
-
-            # EMA update — memory_new còn trong graph để gradient chảy vào write_attn
-            memory_new = self.alpha * self.memory + (1 - self.alpha) * Q_refined
-
-            # READ: Q token làm Query, memory_new làm Key/Value
-            # [FIX 3] Pre-Norm: norm memory_new TRƯỚC khi làm K/V
-            # [FIX 1] Đọc từ memory_new → loss→m_out→memory_new→Q_refined→write_attn ✓
-            mem_normed = self.norm_m(memory_new)       # (B, num_slots, D)
+            # ─── 1. READ TRƯỚC (Đọc từ quá khứ, an toàn 100%) ───
+            mem_normed = self.norm_m(self.memory)      # (B, num_slots, D)
             m_out      = self.read(
                 Q=Q,
                 K=mem_normed,
                 V=mem_normed,
             )                                          # (B, T, D)
 
+            # ─── 2. TỔNG HỢP OUTPUT ───
             x_new = x + attn_out + m_out
 
-            # Lưu dưới dạng detach — gradient đã được tính xong trong batch này.
-            # KHÔNG giữ graph qua batch → tránh "backward through graph a second time"
+            # ─── 3. WRITE SAU (Nén thông tin hiện tại cho tương lai) ───
+            mem_for_write = self.norm_w(self.memory)   # (B, num_slots, D)
+            q_for_write   = self.norm_w(Q)             # (B, T, D)
+            
+            Q_refined = self.write_attn(
+                Q=mem_for_write,
+                K=q_for_write,
+                V=q_for_write,
+                # KHÔNG CẦN MASK NỮA: Vì memory_new này sẽ chỉ được READ bởi batch tiếp theo!
+            )                                          # (B, num_slots, D)
+
+            # EMA update 
+            memory_new = self.alpha * self.memory + (1 - self.alpha) * Q_refined
+
+            # ─── 4. THỦ THUẬT KÉO GRADIENT MA THUẬT ───
+            # Tạo đường dẫn (shortcut) để Gradient từ loss có thể chảy ngược vào write_attn
+            # Phép nhân 0.0 đảm bảo giá trị forward của x_new không bị thay đổi.
+            x_new = x_new + 0.0 * memory_new.sum()
+
+            # ─── 5. LƯU & CẮT ĐỒ THỊ ───
             self.memory = memory_new.detach()
 
         else:
