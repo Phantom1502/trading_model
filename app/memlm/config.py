@@ -167,7 +167,7 @@ def get_100m_config() -> Config:
     cfg = Config()
     cfg.model.d_model   = 512
     cfg.model.n_heads   = 8
-    cfg.model.n_layers  = 8
+    cfg.model.n_layers  = 12
     cfg.model.max_seq   = 512
     cfg.data.chunk_size = 10_000
     cfg.train.batch_size = 16
