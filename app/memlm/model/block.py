@@ -233,11 +233,6 @@ class MemoryBlock(nn.Module):
             gated_m_out = m_out * gate
             # ─── 2. TỔNG HỢP OUTPUT ───
             x_new = x + attn_out + gated_m_out
-            
-            # ─── 4. THỦ THUẬT KÉO GRADIENT MA THUẬT ───
-            # Tạo đường dẫn (shortcut) để Gradient từ loss có thể chảy ngược vào write_attn
-            # Phép nhân 0.0 đảm bảo giá trị forward của x_new không bị thay đổi.
-            x_new = x_new + 0.0 * memory_new.sum()
 
             # ─── 5. LƯU & CẮT ĐỒ THỊ ───
             self.memory = memory_new.detach()
