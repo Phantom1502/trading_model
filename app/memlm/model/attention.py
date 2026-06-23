@@ -100,7 +100,8 @@ class CrossAttention(nn.Module):
         B, L, _ = x.shape
         return W(x).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
 
-    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor) -> torch.Tensor:
+    # THÊM THAM SỐ attn_mask VÀO HÀM FORWARD
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
         B, Lq, D = Q.shape
 
         q = self._split_heads(Q, self.Wq)
@@ -108,6 +109,11 @@ class CrossAttention(nn.Module):
         v = self._split_heads(V, self.Wv)
 
         scores  = torch.matmul(q, k.transpose(-2, -1)) / self.scale
+        
+        # ÁP MASK NẾU CÓ (Dành riêng cho bước WRITE)
+        if attn_mask is not None:
+            scores = scores + attn_mask
+
         weights = F.softmax(scores, dim=-1)
         out     = torch.matmul(weights, v)
 

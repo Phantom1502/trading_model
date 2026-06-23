@@ -193,30 +193,50 @@ class MemoryBlock(nn.Module):
         attn_out = self.self_attn(Q, freqs_cis, attn_mask=attn_mask)     # (B, T, D)
 
         if self.use_memory and self.memory is not None:
-            # ── [FIX 1+3] WRITE trước, READ sau từ memory MỚI ──────────────
+            B, T, D = x.shape
+            num_slots = self.memory.shape[1]
 
-            # WRITE: memory làm Query, Q token làm Key/Value
-            # [FIX 3] Pre-Norm: norm memory và Q TRƯỚC khi vào write_attn
-            mem_for_write = self.norm_w(self.memory)   # (B, num_slots, D)
-            q_for_write   = self.norm_w(Q)             # (B, T, D)
+            # ─── TẠO MASK CHO BƯỚC WRITE CHUẨN (num_slots, T) ───
+            if num_slots == T:
+                # Nếu chạy chunking đặc biệt mà num_slots luôn bằng T
+                write_mask = torch.full((T, T), float("-inf"), device=x.device)
+                write_mask = torch.triu(write_mask, diagonal=1)
+            else:
+                # DÀNH CHO CONFIG CỐ ĐỊNH (num_slots cố định, T thay đổi liên tục):
+                # Tạo mask causal vuông (T, T) để biết mỗi bước thời gian được nhìn đến đâu
+                causal_base = torch.full((T, T), float("-inf"), device=x.device)
+                causal_base = torch.triu(causal_base, diagonal=1)
+                
+                # CHÌA KHÓA: Lấy dòng cuối cùng của causal_base (ứng với token hiện tại cuối cùng) 
+                # rồi lặp lại (repeat) nó cho đủ số lượng num_slots.
+                # Dòng cuối cùng của causal_base luôn có dạng: [0, 0, 0, ..., 0] (được nhìn hết quá khứ)
+                # Khi bạn suy luận (Inference), ma trận này tự động thu hẹp theo T mà không lo lệch slot!
+                write_mask = causal_base[-1:].repeat(num_slots, 1)
+
+            # Thêm chiều head để broadcast thành công: (1, 1, num_slots, T)
+            write_mask = write_mask.unsqueeze(0).unsqueeze(0) 
+
+            # WRITE: Truyền write_mask an toàn vào đây
+            mem_for_write = self.norm_w(self.memory)   
+            q_for_write   = self.norm_w(Q)             
             Q_refined     = self.write_attn(
                 Q=mem_for_write,
                 K=q_for_write,
                 V=q_for_write,
-            )                                          # (B, num_slots, D)
+                attn_mask=write_mask
+            ) 
 
-            # EMA update — memory_new còn trong graph để gradient chảy vào write_attn
+            # EMA update 
             memory_new = self.alpha * self.memory + (1 - self.alpha) * Q_refined
 
-            # READ: Q token làm Query, memory_new làm Key/Value
-            # [FIX 3] Pre-Norm: norm memory_new TRƯỚC khi làm K/V
-            # [FIX 1] Đọc từ memory_new → loss→m_out→memory_new→Q_refined→write_attn ✓
-            mem_normed = self.norm_m(memory_new)       # (B, num_slots, D)
+            # READ: Đọc an toàn, để None
+            mem_normed = self.norm_m(memory_new)       
             m_out      = self.read(
                 Q=Q,
                 K=mem_normed,
                 V=mem_normed,
-            )                                          # (B, T, D)
+                attn_mask=None
+            )
 
             x_new = x + attn_out + m_out
 
