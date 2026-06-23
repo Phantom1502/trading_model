@@ -97,6 +97,8 @@ class VietnameseTokenizer:
         self.tokenizer = AutoTokenizer.from_pretrained(
             pretrained_name,
             use_fast=_effective_use_fast,
+            local_files_only=True,        # Thêm cái này nếu bạn chạy offline hoàn toàn từ thư mục Kaggle
+            trust_remote_code=True,
         )
 
         if self.tokenizer.pad_token is None:
