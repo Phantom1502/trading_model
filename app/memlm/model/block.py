@@ -100,6 +100,10 @@ class MemoryBlock(nn.Module):
 
             # CỔNG READ: token hiện tại tra vấn memory đã cập nhật
             self.read = CrossAttention(d_model, n_heads)
+            
+            # BỘ ĐO ĐỘ ĐẬM ĐẶC (Gate Projector)
+            # Nhận đầu vào là [Mean, Std] của Q_tinh_che nên kích thước đầu vào phải nhân đôi (2 * d_model)
+            self.gate_proj = nn.Linear(2 * d_model, d_model, bias=False)
 
         # ── Mạch reasoning: Pre-Norm + SwiGLU ──────────────────────────────
         self.norm2 = RMSNorm(d_model)
@@ -202,10 +206,7 @@ class MemoryBlock(nn.Module):
                 V=mem_normed,
             )                                          # (B, T, D)
 
-            # ─── 2. TỔNG HỢP OUTPUT ───
-            x_new = x + attn_out + m_out
-
-            # ─── 3. WRITE SAU (Nén thông tin hiện tại cho tương lai) ───
+            # ─── 2. WRITE SAU (Nén thông tin hiện tại cho tương lai) ───
             mem_for_write = self.norm_w(self.memory)   # (B, num_slots, D)
             q_for_write   = self.norm_w(Q)             # (B, T, D)
             
@@ -216,9 +217,23 @@ class MemoryBlock(nn.Module):
                 # KHÔNG CẦN MASK NỮA: Vì memory_new này sẽ chỉ được READ bởi batch tiếp theo!
             )                                          # (B, num_slots, D)
 
+            # TRÍCH XUẤT HÀM LƯỢNG THÔNG TIN: Tính Mean và Std dọc theo chiều slots bộ nhớ (dim=1)
+            q_mean = Q_refined.mean(dim=1)  # Hướng ngữ nghĩa chủ đạo: (B, D)
+            q_std  = Q_refined.std(dim=1)   # Độ phân hóa/Độ sắc nét của thông tin: (B, D)
+        
+            # Gộp chung lại thành bản đồ đặc trưng bối cảnh: (B, 2 * D)
+            density_features = torch.cat([q_mean, q_std], dim=-1)
+            # Cho qua lớp Tuyến tính + Sigmoid để chấm điểm độ đậm (0.0 -> 1.0)
+            # Thêm unsqueeze(1) thành kích thước (B, 1, D) để tự động nhân broadcast cho cả chuỗi T hoặc các slots
+            gate = torch.sigmoid(self.gate_proj(density_features)).unsqueeze(1)
+            
             # EMA update 
             memory_new = self.alpha * self.memory + (1 - self.alpha) * Q_refined
 
+            gated_m_out = m_out * gate
+            # ─── 2. TỔNG HỢP OUTPUT ───
+            x_new = x + attn_out + gated_m_out
+            
             # ─── 4. THỦ THUẬT KÉO GRADIENT MA THUẬT ───
             # Tạo đường dẫn (shortcut) để Gradient từ loss có thể chảy ngược vào write_attn
             # Phép nhân 0.0 đảm bảo giá trị forward của x_new không bị thay đổi.
