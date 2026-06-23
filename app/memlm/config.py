@@ -170,8 +170,8 @@ def get_100m_config() -> Config:
     cfg.model.n_layers  = 8
     cfg.model.max_seq   = 512
     cfg.data.chunk_size = 10_000
-    cfg.train.batch_size = 8
-    cfg.train.grad_accum = 4
+    cfg.train.batch_size = 16
+    cfg.train.grad_accum = 2
     return cfg
 
 def get_110m_config() -> Config:
