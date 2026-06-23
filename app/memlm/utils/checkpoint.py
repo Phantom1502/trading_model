@@ -88,3 +88,62 @@ def load_checkpoint(
         "extra"      : ckpt.get("extra"),
         "model_cfg"  : ckpt.get("model_cfg"),   # dict hoặc None nếu checkpoint cũ không có
     }
+
+
+def hf_upload_latest(
+    local_path : str,
+    repo_id    : str,
+    token      : str = None,
+    filename   : str = "last_chunk.pt",
+) -> bool:
+    """
+    Upload checkpoint lên HuggingFace Hub, lưu với tên cố định `filename`
+    (mặc định "last_chunk.pt") — overwrite mỗi chunk để tiết kiệm storage.
+
+    Args:
+        local_path : đường dẫn file .pt local cần upload (thường là chunk_{idx}.pt)
+        repo_id    : "username/repo-name" trên HuggingFace
+        token      : HF token. Nếu None, đọc từ env HF_TOKEN hoặc từ
+                     huggingface-cli login cache (~/.cache/huggingface/token).
+        filename   : tên file trên HF repo (mặc định "last_chunk.pt")
+
+    Returns:
+        True nếu upload thành công, False nếu có lỗi (in cảnh báo, không raise).
+
+    Yêu cầu:
+        pip install huggingface_hub
+
+    Setup (1 trong 3 cách):
+        1. huggingface-cli login          (lưu token vào cache, tiện cho dev)
+        2. export HF_TOKEN=hf_xxx...      (an toàn hơn cho Colab)
+        3. truyền token=... trực tiếp     (tường minh nhất, không khuyến nghị hardcode)
+
+    Repo phải tồn tại sẵn trên HuggingFace (type="model" hoặc "dataset").
+    Tạo repo trước bằng:
+        huggingface-cli repo create memlm-checkpoints --type model
+    """
+    try:
+        from huggingface_hub import HfApi
+    except ImportError:
+        print("  ⚠ hf_upload_latest: huggingface_hub chưa cài. "
+              "Chạy: pip install huggingface_hub")
+        return False
+
+    # Ưu tiên: tham số > env var > cache từ huggingface-cli login
+    _token = token or os.environ.get("HF_TOKEN")
+
+    try:
+        api = HfApi(token=_token)
+        api.upload_file(
+            path_or_fileobj=local_path,
+            path_in_repo=filename,
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message=f"update {filename} ← {os.path.basename(local_path)}",
+        )
+        print(f"  ✓ Uploaded → hf:///{repo_id}/{filename}")
+        return True
+
+    except Exception as e:
+        print(f"  ⚠ hf_upload_latest failed (training tiếp tục bình thường): {e}")
+        return False

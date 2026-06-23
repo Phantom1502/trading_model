@@ -21,6 +21,7 @@ import torch
 from .base import BaseTrainer
 from dataset import ChunkedWikiLoader
 from utils import save_checkpoint, load_checkpoint
+from utils.checkpoint import hf_upload_latest
 
 
 class PretrainTrainer(BaseTrainer):
@@ -42,6 +43,24 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
         reset_lr_for_new_round: QUAN TRỌNG khi train round mới với lr/lr_decay_cycle_steps
                          khác round trước.
 
+    ────────────────────────────────────────────────────────────────────────
+    HuggingFace auto-upload (cfg.train.hf_repo_id):
+
+    Sau mỗi chunk, checkpoint chunk_{idx}.pt sẽ được upload lên HF với tên
+    cố định "last_chunk.pt" — overwrite để tiết kiệm storage. Khi resume,
+    tải file này về rồi đặt cfg.train.resume_from trỏ vào, tự check chunk_idx
+    từ nội dung checkpoint để biết tiếp tục từ chunk nào.
+
+    Để bật:
+        cfg.train.hf_repo_id = "username/memlm-checkpoints"
+
+    Auth (1 trong 3 cách):
+        1. export HF_TOKEN=hf_xxx...          # Colab: Secrets hoặc os.environ
+        2. huggingface-cli login              # dev local
+        3. cfg.train.hf_token = "hf_xxx..."  # tường minh (không khuyến nghị hardcode)
+
+    Nếu cfg.train.hf_repo_id bỏ trống hoặc upload lỗi mạng, training tiếp
+    tục bình thường — hf_upload_latest() không raise exception.
     ────────────────────────────────────────────────────────────────────────
     BUG ĐÃ PHÁT HIỆN VÀ FIX (verify bằng thực nghiệm):
 
@@ -109,6 +128,10 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
     if data_loader_gen is None:
         data_loader_gen = ChunkedWikiLoader(cfg, tokenizer, start_chunk=start_chunk)
 
+    # ── HF upload config ──────────────────────────────────────────────────────
+    hf_repo_id = getattr(cfg.train, "hf_repo_id", None)
+    hf_token   = getattr(cfg.train, "hf_token",   None)   # None = đọc từ env HF_TOKEN
+
     # ── Train qua từng chunk — KHÔNG còn cần `continue` để skip ──────────────
     for train_loader, val_loader in data_loader_gen:
         chunk_idx = data_loader_gen.chunk_count   # số chunk thực tế (đã tính cả start_chunk)
@@ -121,12 +144,17 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
 
         # Lưu checkpoint sau mỗi chunk — quan trọng vì RAM thấp,
         # có thể cần restart kernel giữa các chunk
+        chunk_path = f"{cfg.train.save_dir}/chunk_{chunk_idx}.pt"
         save_checkpoint(
-            f"{cfg.train.save_dir}/chunk_{chunk_idx}.pt",
+            chunk_path,
             trainer.model, trainer.optimizer, trainer.scheduler,
             trainer.global_step, chunk_idx, val_loss,
             model_cfg=cfg.model,
         )
+
+        # Upload lên HuggingFace (nếu hf_repo_id được đặt)
+        if hf_repo_id:
+            hf_upload_latest(chunk_path, repo_id=hf_repo_id, token=hf_token)
 
     print("\n✓ Pretraining hoàn tất toàn bộ dataset.")
     return trainer
