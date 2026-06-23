@@ -102,27 +102,36 @@ class TrainConfig:
     reset_memory_per_document    : bool = True
 
 
+"""
+PATCH cho config.py — chỉ thay TokenizerConfig.
+Thay thế toàn bộ class TokenizerConfig hiện tại bằng đoạn này.
+"""
+
 @dataclass
 class TokenizerConfig:
     """Cấu hình tokenizer."""
-    pretrained_name : str = "vinai/phobert-base"
 
-    # use_fast KHÔNG có tác dụng với PhoBERT — đã verify
-    use_fast        : bool = False
-
-    # strict_chart_mode=True (mặc định): price token (O_x/H_x/L_x/C_x) CHỈ được
-    # nhận diện khi nằm trong cặp <chart>...</chart>. An toàn khi train lẫn
-    # dữ liệu trading với sách/Wikipedia/VTSNLP — tránh match nhầm các ký
-    # hiệu xuất hiện tự nhiên trong corpus (C_2022 = năm, H_0 = hằng số
-    # Hubble, O_157 = chủng vi khuẩn, ...).
+    # ── Custom BPE (khuyến nghị) ─────────────────────────────────────────
+    # Sau khi chạy scripts/train_tokenizer.py, đặt path output ở đây.
+    # use_fast=True hoạt động bình thường với PreTrainedTokenizerFast.
     #
-    # Tắt (False) CHỈ khi train trên dữ liệu trading THUẦN — lớp 2 bin
-    # validation [0, n_price_bins-1] trong _split_segments_loose vẫn hoạt
-    # động để chặn KeyError kể cả khi data lỗi.
-    strict_chart_mode: bool = True   # mặc định True — an toàn khi trộn corpus
+    # ── PhoBERT legacy ───────────────────────────────────────────────────
+    # pretrained_name = "vinai/phobert-base"
+    # use_fast        = False   (PhoBERT không có Fast tokenizer)
+    # Nếu truyền use_fast=True với PhoBERT, tokenizer.py tự fallback + warn.
+    #
+    pretrained_name : str  = "custom_tokenizer"   # path local sau train
+    use_fast        : bool = True                  # True cho custom BPE
 
-    # Số bin giá cho mỗi loại O/H/L/C. Tổng price token = n_price_bins*4 + 2
-    n_price_bins     : int = 1024
+    # strict_chart_mode=True (mặc định): price token (O_x/H_x/L_x/C_x) CHỈ
+    # được nhận diện khi nằm trong cặp <chart>...</chart>. An toàn khi trộn
+    # corpus sách/Wikipedia với dữ liệu trading.
+    # Tắt (False) CHỈ khi train thuần dữ liệu trading.
+    strict_chart_mode: bool = True
+
+    # Số bin giá cho mỗi loại O/H/L/C. Tổng price token = n_price_bins×4 + 2
+    # 1024 bin → price vocab = 4098 tokens
+    n_price_bins    : int  = 1024
 
 
 @dataclass
