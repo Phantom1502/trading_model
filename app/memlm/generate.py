@@ -125,6 +125,7 @@ def generate(
     temperature : float = 0.8,
     top_k       : int   = 50,
     top_p       : float = 0.95,
+    new_token_only : bool  = False,   # nếu True, chỉ trả về phần sinh thêm, không kèm prompt
 ) -> str:
     """
     Sinh văn bản từ prompt. Tự động prefill M nếu prompt dài hơn max_seq.
@@ -135,6 +136,7 @@ def generate(
         temperature: nhiệt độ sampling (thấp → đoán chắc hơn, cao → đa dạng hơn)
         top_k      : chỉ lấy top-k token có xác suất cao nhất
         top_p      : nucleus sampling — lấy tập token có tổng xác suất >= top_p
+        new_token_only: nếu True, chỉ trả về phần sinh thêm, không kèm prompt gốc
 
     Returns:
         Chuỗi văn bản đầy đủ (prompt gốc + phần sinh thêm).
@@ -175,6 +177,8 @@ def generate(
         if next_tok == tokenizer.eos_id:
             break
 
+    if new_token_only:
+        return tokenizer.decode(generated)  # chỉ phần sinh thêm
     # Decode: prompt gốc + phần sinh thêm
     return tokenizer.decode(prompt_ids + generated)
 
