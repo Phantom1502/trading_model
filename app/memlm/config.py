@@ -171,7 +171,7 @@ def get_110m_config() -> Config:
     cfg.model.d_model   = 768      # Tăng từ 512 -> 768
     cfg.model.n_heads   = 12       # Tăng từ 8 -> 12 (để 768 / 12 = 64)
     cfg.model.n_layers  = 12       # Tăng từ 8 -> 12
-    cfg.model.max_seq   = 1024     
+    cfg.model.max_seq   = 512     
     
     cfg.data.chunk_size = 10_000
     
