@@ -59,26 +59,56 @@ class TokenChunkDataset(Dataset):
     Chế độ mặc định: mỗi document bị cắt thành các đoạn ĐỘC LẬP.
     DataLoader có thể shuffle tự do — đa dạng batch tốt.
     M không carry-over giữa các segment của cùng document.
+
+    [FIX 4a] Bỏ qua document ngắn hơn seg_len+1 token — tránh batch có
+    padding >80% gây GPU utilization kém và loss không nhất quán.
+
+    [FIX 4b] Giữ lại phần đuôi của document (token cuối không đủ seg_len)
+    nếu dài hơn min_tail_len. Phiên bản cũ bỏ mất phần này hoàn toàn.
+    Ví dụ: doc 1200 token, seg_len=512:
+        Cũ:  chunk[0:512], chunk[512:1024] — bỏ 176 token cuối
+        Mới: chunk[0:512], chunk[512:1024], chunk[688:1200] (overlap OK)
     """
 
-    def __init__(self, documents: list[list[int]], seg_len: int):
+    def __init__(
+        self,
+        documents    : list[list[int]],
+        seg_len      : int,
+        min_tail_len : int = 64,   # giữ lại đuôi nếu >= min_tail_len token (sau khi trừ label shift)
+    ):
         self.samples = []
+        n_short_skipped = 0
 
         for doc in documents:
-            if len(doc) < 2:
+            # [FIX 4a] Bỏ doc ngắn hơn seg_len+1 — quá nhiều padding, ít thông tin
+            if len(doc) < seg_len + 1:
+                n_short_skipped += 1
                 continue
-            n_full = max(1, len(doc) // (seg_len + 1))
+
+            n_full = len(doc) // (seg_len + 1)
+            chunks = []
+
             for i in range(n_full):
                 start = i * (seg_len + 1)
                 end   = start + seg_len + 1
-                chunk = doc[start:end]
-                if len(chunk) < 2:
-                    continue
+                chunks.append(doc[start:end])
+
+            # [FIX 4b] Giữ phần đuôi nếu đủ dài
+            tail_start = n_full * (seg_len + 1)
+            tail       = doc[tail_start:]
+            if len(tail) >= min_tail_len + 1:   # +1 vì cần ít nhất 1 label token
+                # Lấy seg_len token cuối để đuôi có độ dài chuẩn (tránh batch lệch)
+                chunks.append(doc[-(seg_len + 1):])
+
+            for i, chunk in enumerate(chunks):
                 self.samples.append({
                     "ids"         : chunk,
                     "is_doc_start": (i == 0),
-                    "is_doc_end"  : (i == n_full - 1),
+                    "is_doc_end"  : (i == len(chunks) - 1),
                 })
+
+        if n_short_skipped > 0:
+            print(f"  [TokenChunkDataset] Bỏ qua {n_short_skipped} doc ngắn hơn {seg_len+1} token")
 
     def __len__(self):
         return len(self.samples)
@@ -131,9 +161,14 @@ class SequentialDocumentDataset(Dataset):
         if stride is None:
             stride = seg_len
 
-        # Đoạn này sẽ bỏ khá nhiều document ngắn
-        # doc_list = [d for d in documents if len(d) >= seg_len + 1] 
-        doc_list = [d for d in documents if len(d) >= 2]
+        # [FIX 4a] Filter nhất quán với TokenChunkDataset — bỏ doc không đủ
+        # tạo được ít nhất 1 window đầy đủ. Comment cũ đã đúng hướng nhưng
+        # bị comment out; giờ bật lại và thêm warning.
+        doc_list = [d for d in documents if len(d) >= seg_len + 1]
+        n_skipped = len(documents) - len(doc_list)
+        if n_skipped > 0:
+            print(f"  [SequentialDocumentDataset] Bỏ qua {n_skipped} doc ngắn hơn {seg_len+1} token")
+
         if shuffle_docs:
             random.shuffle(doc_list)
 
@@ -146,8 +181,12 @@ class SequentialDocumentDataset(Dataset):
                 windows.append(doc[start : start + seg_len + 1])
                 start += stride
 
-            if not windows:
-                continue
+            # [FIX 4b] Giữ phần đuôi nếu đủ dài — nhất quán với TokenChunkDataset
+            # Lấy seg_len+1 token cuối để window có độ dài chuẩn
+            tail_start = (len(windows) - 1) * stride if windows else 0
+            tail_covered_end = tail_start + seg_len + 1
+            if tail_covered_end < len(doc) and len(doc) - tail_covered_end >= 64:
+                windows.append(doc[-(seg_len + 1):])
 
             for i, chunk in enumerate(windows):
                 self.samples.append({
