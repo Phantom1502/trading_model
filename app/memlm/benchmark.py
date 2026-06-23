@@ -680,9 +680,13 @@ def run_language_benchmark(
 
     all_seqs = []
     for prompt in prompts:
-        if hasattr(model, "reset_memory"):
-            model.reset_memory(batch_size=1, device=device)
         for _ in range(n_samples):
+            # [FIX] Reset M trước mỗi sample — không chỉ trước mỗi prompt.
+            # Nếu không reset, M từ sample trước leak vào sample sau:
+            # sample 2 bắt đầu với M đã tích lũy từ sample 1 → bị anchor
+            # → sinh token lặp lại → repeat_ratio cao, language_score âm.
+            if hasattr(model, "reset_memory"):
+                model.reset_memory(batch_size=1, device=device)
             seq = _generate_sample(model, tokenizer, prompt, max_new=max_new, device=device)
             prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
             all_seqs.append(seq[prompt_len:])
