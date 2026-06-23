@@ -135,6 +135,30 @@ class MemoryLM(nn.Module):
         x = self.norm_out(x)
         return self.lm_head(x)
 
+    def forward_memory_only(self, input_ids: torch.Tensor, attn_mask: torch.Tensor = None) -> None:
+        """
+        [FIX 5] Chạy forward CHỈ để cập nhật M — bỏ qua norm_out và lm_head.
+
+        Dùng trong generate.py khi flush token cũ ra khỏi sliding window:
+        chỉ cần M được update, không cần logit → tiết kiệm ~30% compute
+        (norm_out + lm_head chiếm phần đáng kể với vocab_size lớn).
+
+        Không trả về gì — caller chỉ quan tâm đến side-effect trên self.memory.
+        """
+        B, T = input_ids.shape
+        device = input_ids.device
+
+        if self.use_memory and not self.has_memory_initialized(batch_size=B):
+            self.reset_memory(B, device)
+
+        x = self.drop(self.token_emb(input_ids))
+
+        freqs_cis = self.freqs_cis.to(device)
+
+        for block in self.blocks:
+            x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
+        # Dừng ở đây — bỏ norm_out và lm_head
+
 
 def causal_mask(T: int, device: torch.device) -> torch.Tensor:
     """Tạo causal mask cho autoregressive attention."""

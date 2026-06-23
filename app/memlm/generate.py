@@ -162,7 +162,8 @@ def generate(
         if T > max_seq:
             n_flush = T - max_seq
             flush   = ids[:, :n_flush]
-            model(flush, attn_mask=causal_mask(n_flush, device))
+            # [FIX 5] Dùng forward_memory_only — chỉ update M, bỏ norm_out+lm_head
+            model.forward_memory_only(flush, attn_mask=causal_mask(n_flush, device))
             model.detach_memory()
             ids = ids[:, n_flush:]
             T   = max_seq
