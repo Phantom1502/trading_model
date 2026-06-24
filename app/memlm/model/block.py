@@ -139,8 +139,9 @@ class MemoryBlock(nn.Module):
             nn.init.normal_(self.memory, std=0.02)
 
     def reset_memory(self, batch_size: int, device: torch.device):
-        self.init_memory(batch_size, device)
-
+        #self.init_memory(batch_size, device)
+        pass
+    
     def reset_memory_rows(self, mask: torch.Tensor, device: torch.device):
         """
         [FIX 4] Reset memory CHỈ cho các sample trong batch có mask=True.
@@ -149,6 +150,8 @@ class MemoryBlock(nn.Module):
         mask: (B,) bool tensor
         """
         if self.use_memory and self.memory is not None:
+            pass
+            """
             noise = torch.zeros_like(self.memory)
             nn.init.normal_(noise, std=0.02)
             # Chỉ ghi đè những row có mask=True
@@ -157,6 +160,7 @@ class MemoryBlock(nn.Module):
                 noise,
                 self.memory,
             )
+            """
 
     def detach_memory(self):
         """Chặt đồ thị tính toán — trainer gọi theo bptt_window."""
