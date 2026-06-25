@@ -172,8 +172,8 @@ def get_100m_config() -> Config:
     cfg.model.half_life = 2000
     cfg.model.num_slots = 512
     cfg.data.chunk_size = 10_000
-    cfg.train.batch_size = 16
-    cfg.train.grad_accum = 2
+    cfg.train.batch_size = 16 # chuẩn là 32 * 64 (accumulate) * 2048 (seq_len) = 4M token / step
+    cfg.train.grad_accum = 512 # vì seq = 512 => accum = 2048 * 64 * 32 / (512 * 16) = 8 * 64 = 512
     return cfg
 
 def get_110m_config() -> Config:
