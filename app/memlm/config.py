@@ -173,7 +173,7 @@ def get_100m_config() -> Config:
     cfg.model.num_slots = 512
     cfg.data.chunk_size = 10_000
     cfg.train.batch_size = 16 # chuẩn là 32 * 64 (accumulate) * 2048 (seq_len) = 4M token / step
-    cfg.train.grad_accum = 512 # vì seq = 512 => accum = 2048 * 64 * 32 / (512 * 16) = 8 * 64 = 512
+    cfg.train.grad_accum = 16 # vì seq = 512 => accum = 2048 * 64 * 32 / (512 * 16) = 8 * 64 = 512, số này quá lớn, nên giảm xuống 512 để tránh OOM trên T4
     return cfg
 
 def get_110m_config() -> Config:
