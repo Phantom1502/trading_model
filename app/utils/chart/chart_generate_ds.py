@@ -1,6 +1,6 @@
 
-from chartcodec import ChartCodec, calculate_atr, N_BINS, M1_SCALE, M5_SCALE, M15_SCALE, H1_SCALE, D1_SCALE
-from chartdatasetbuilder import ChartDatasetBuilder
+from app.utils.chart.chartcodec import ChartCodec, calculate_atr, N_BINS, M1_SCALE, M5_SCALE, M15_SCALE, H1_SCALE, D1_SCALE
+from app.utils.chart.chartdatasetbuilder import ChartDatasetBuilder
 
 import pandas as pd
 
