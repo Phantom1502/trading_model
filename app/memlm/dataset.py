@@ -60,7 +60,7 @@ class TokenChunkDataset(Dataset):
     DataLoader có thể shuffle tự do — đa dạng batch tốt.
     M không carry-over giữa các segment của cùng document.
 
-    [FIX 4a] Bỏ qua document ngắn hơn seg_len+1 token — tránh batch có
+    [FIX 4a] Bỏ qua document ngắn hơn 50% seg_len+1 token — tránh batch có
     padding >80% gây GPU utilization kém và loss không nhất quán.
 
     [FIX 4b] Giữ lại phần đuôi của document (token cuối không đủ seg_len)
@@ -80,8 +80,8 @@ class TokenChunkDataset(Dataset):
         n_short_skipped = 0
 
         for doc in documents:
-            # [FIX 4a] Bỏ doc ngắn hơn seg_len+1 — quá nhiều padding, ít thông tin
-            if len(doc) < seg_len + 1:
+            # [FIX 4a] Bỏ doc ngắn hơn 50% seg_len+1 — quá nhiều padding, ít thông tin
+            if len(doc) < (seg_len + 1) // 2:
                 n_short_skipped += 1
                 continue
 
@@ -108,7 +108,7 @@ class TokenChunkDataset(Dataset):
                 })
 
         if n_short_skipped > 0:
-            print(f"  [TokenChunkDataset] Bỏ qua {n_short_skipped} doc ngắn hơn {seg_len+1} token")
+            print(f"  [TokenChunkDataset] Bỏ qua {n_short_skipped} doc ngắn hơn {(seg_len+1)//2} token")
 
     def __len__(self):
         return len(self.samples)
@@ -162,12 +162,12 @@ class SequentialDocumentDataset(Dataset):
             stride = seg_len
 
         # [FIX 4a] Filter nhất quán với TokenChunkDataset — bỏ doc không đủ
-        # tạo được ít nhất 1 window đầy đủ. Comment cũ đã đúng hướng nhưng
+        # 50% seg_len+1. Comment cũ đã đúng hướng nhưng
         # bị comment out; giờ bật lại và thêm warning.
-        doc_list = [d for d in documents if len(d) >= seg_len + 1]
+        doc_list = [d for d in documents if len(d) >= (seg_len + 1) // 2]
         n_skipped = len(documents) - len(doc_list)
         if n_skipped > 0:
-            print(f"  [SequentialDocumentDataset] Bỏ qua {n_skipped} doc ngắn hơn {seg_len+1} token")
+            print(f"  [SequentialDocumentDataset] Bỏ qua {n_skipped} doc ngắn hơn {(seg_len+1)//2} token")
 
         if shuffle_docs:
             random.shuffle(doc_list)
