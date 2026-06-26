@@ -95,7 +95,7 @@ class TrainConfig:
     grad_accum         : int = 4
     lr                 : float = 3e-4
     warmup_steps        : int = 500
-    weight_decay        : float = 0.1
+    weight_decay        : float = 0.01
     max_grad_norm        : float = 1.0
     epochs_per_chunk     : int = 1     # số epoch train trên mỗi chunk data
     total_chunks         : int = -1    # -1 = train hết toàn bộ dataset
@@ -104,7 +104,7 @@ class TrainConfig:
     # nên dùng "chu kỳ giả định": coi như cứ sau `lr_decay_cycle_steps` step
     # thì lr đã decay hết cosine một vòng, rồi WARM RESTART (quay lại đỉnh,
     # decay tiếp). Đây là kỹ thuật SGDR (cosine annealing with warm restarts).
-    lr_decay_cycle_steps : int = 5000
+    lr_decay_cycle_steps : int = 1000_000
     lr_min_ratio          : float = 0.1   # lr thấp nhất = 0.1 * lr (không về 0 tuyệt đối)
 
     log_every            : int = 100

@@ -472,28 +472,25 @@ class ChunkedMixLoader(_BaseChunkedLoader):
         super().__init__(cfg, tokenizer, start_chunk=start_chunk)
 
     def _resolve_file_order(self) -> dict:
-        """
-        Nếu có file_order từ checkpoint → dùng lại (resume đúng thứ tự).
-        Không có → glob + shuffle mới, lưu lại để checkpoint sau.
-        """
-        mix = self.cfg.data.mix
-        if self._file_order is not None:
-            print("  [MixLoader] Resume: dùng lại file order từ checkpoint")
-            return self._file_order
-
+        mix   = self.cfg.data.mix
         order = {}
-        for name, (pattern, _) in mix.sources.items():
-            files = sorted(_glob.glob(pattern))
-            if not files:
-                raise FileNotFoundError(
-                    f"Không tìm thấy file nào khớp pattern: {pattern}"
-                )
-            import random as _random
-            _random.shuffle(files)
-            order[name] = files
-            print(f"  [MixLoader] {name}: {len(files)} files (shuffled)")
 
-        self._file_order = order   # lưu lại để caller có thể checkpoint
+        for name, (pattern, _) in mix.sources.items():
+            if self._file_order and name in self._file_order:
+                # Source đã có trong checkpoint → dùng lại order cũ
+                order[name] = self._file_order[name]
+                print(f"  [MixLoader] {name}: resume order từ checkpoint ({len(order[name])} files)")
+            else:
+                # Source mới hoặc không có checkpoint → shuffle mới
+                files = sorted(_glob.glob(pattern))
+                if not files:
+                    raise FileNotFoundError(f"Không tìm thấy file: {pattern}")
+                import random as _random
+                _random.shuffle(files)
+                order[name] = files
+                print(f"  [MixLoader] {name}: shuffle mới ({len(files)} files)")
+
+        self._file_order = order
         return order
 
     def _load_dataset(self):
