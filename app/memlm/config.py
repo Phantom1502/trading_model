@@ -9,6 +9,35 @@ from typing import Optional
 
 
 @dataclass
+class MixConfig:
+    """
+    Cấu hình mix nhiều nguồn parquet local theo tỷ lệ.
+
+    sources: dict tên → (glob_path, probability)
+        Ví dụ:
+            {
+                "wiki" : ("data/wiki/*.parquet",  0.20),
+                "code" : ("data/code/*.parquet",  0.20),
+                "books": ("data/books/*.parquet", 0.40),
+                "news" : ("data/news/*.parquet",  0.20),
+            }
+        Lưu ý: sum(probabilities) phải = 1.0
+
+    stopping_strategy:
+        "first_exhausted" — dừng khi source nào hết trước (an toàn với data lệch size)
+        "all_exhausted"   — oversample source nhỏ cho đến khi tất cả hết
+
+    shuffle_buffer: số sample giữ trong buffer để shuffle chéo giữa các source
+    """
+    sources          : dict = field(default_factory=dict)
+    stopping_strategy: str  = "first_exhausted"
+    shuffle_buffer   : int  = 10_000
+
+
+
+
+
+@dataclass
 class ModelConfig:
     """Kiến trúc model."""
     vocab_size  : int = 64001        # PhoBERT vocab size (set lại sau khi load tokenizer)
@@ -21,24 +50,16 @@ class ModelConfig:
     dropout     : float = 0.1
     use_memory  : bool = True        # False để train baseline so sánh
 
-
 @dataclass
 class DataConfig:
     """Cấu hình dữ liệu và cách load incremental."""
-    # source: "wikipedia" | "vtsnlp" | "parquet"
-    #   "wikipedia" — wikimedia/wikipedia, raw, dùng dataset_name/dataset_subset
-    #   "vtsnlp"    — VTSNLP/vietnamese_curated_dataset, đã curate, 12.2M rows,
-    #                 chất lượng tốt hơn, có field domain để lọc (xem
-    #                 dataset.py::ChunkedVTSNLPLoader để biết danh sách domain)
-    #   "parquet"   — file .parquet local (sách, corpus nội bộ, ...) — xem
-    #                 dataset.py::ChunkedParquetLoader, cần đặt parquet_path
+    # source: "wikipedia" | "vtsnlp" | "parquet" | "mix"
+    #   "mix" — dùng MixConfig bên dưới, interleave nhiều nguồn parquet local
     source         : str = "wikipedia"
 
     dataset_name   : str = "wikimedia/wikipedia"
     dataset_subset : str = "20231101.vi"
 
-    # Chỉ áp dụng khi source="vtsnlp". None = lấy tất cả 25 domain.
-    # Ví dụ: ["Science", "Books_and_Literature"]
     vtsnlp_domains  : list = None
 
     # ── Local parquet (sách, corpus nội bộ) ─────────────────────────────
@@ -47,24 +68,22 @@ class DataConfig:
     # parquet_text_col : tên cột chứa văn bản (mặc định "text")
     # Lọc theo metadata (author, genre, ...): dùng filter_fn khi khởi tạo
     # ChunkedParquetLoader trực tiếp thay vì qua main() — xem train.py.
-    parquet_path     : str = ""       # ví dụ: "data/books.parquet"
-    parquet_text_col : str = "text"   # đổi nếu cột text tên khác
+    parquet_path     : str = ""
+    parquet_text_col : str = "text"
+
+    # ── Mix config — chỉ dùng khi source="mix" ──────────────────────────
+    mix: MixConfig = field(default_factory=MixConfig)
 
     # ── Sequential / sliding window mode ────────────────────────────────
     # sequential_mode=True: dùng SequentialDocumentDataset — M thực sự
     # carry-over xuyên suốt document thay vì reset sau mỗi segment.
     # Bật khi train document dài (sách, bài báo) để M học context dài.
     sequential_mode : bool = False
-
-    # Stride của sliding window (chỉ dùng khi sequential_mode=True).
-    # None = seg_len (không overlap, tương đương TokenChunkDataset).
-    # seg_len // 2 = overlap 50% — nhiều window hơn, M học kỹ hơn.
-    # seg_len // 4 = overlap 75% — phù hợp document rất dài (tiểu thuyết).
     window_stride   : int  = None
 
-    chunk_size     : int = 10_000     # số sample load mỗi lần (do RAM ít)
-    seg_len        : int = 512        # độ dài 1 segment train (truncated BPTT)
-    min_text_len   : int = 200        # bỏ qua sample quá ngắn
+    chunk_size     : int = 10_000
+    seg_len        : int = 512
+    min_text_len   : int = 200
     val_ratio      : float = 0.01
     cache_dir      : str = "./data_cache"
 

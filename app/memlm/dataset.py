@@ -465,3 +465,82 @@ class ChunkedParquetLoader(_BaseChunkedLoader):
         if not isinstance(text, str):
             return None
         return text.strip() or None
+    
+# ── Thêm vào dataset.py ──────────────────────────────────────────────────────
+# Thêm class ChunkedMixLoader sau ChunkedParquetLoader
+
+
+class ChunkedMixLoader(_BaseChunkedLoader):
+    """
+    Load và interleave nhiều nguồn parquet local theo tỷ lệ định sẵn.
+
+    Dùng khi source="mix" trong config.
+
+    Ví dụ setup trong config:
+        cfg.data.source = "mix"
+        cfg.data.mix.sources = {
+            "wiki" : ("data/wiki/*.parquet",  0.20),
+            "code" : ("data/code/*.parquet",  0.20),
+            "books": ("data/books/*.parquet", 0.40),
+            "news" : ("data/news/*.parquet",  0.20),
+        }
+        cfg.data.mix.stopping_strategy = "first_exhausted"
+        cfg.data.mix.shuffle_buffer    = 10_000
+
+    Lưu ý:
+        - sum(probabilities) phải = 1.0
+        - "first_exhausted": dừng khi source nhỏ nhất hết — an toàn với data lệch size
+        - "all_exhausted"  : oversample source nhỏ — dùng khi muốn train hết tất cả data
+    """
+
+    def _load_dataset(self):
+        from datasets import load_dataset, interleave_datasets
+
+        mix = self.cfg.data.mix
+
+        if not mix.sources:
+            raise ValueError(
+                "cfg.data.mix.sources trống — cần định nghĩa ít nhất 1 source.\n"
+                "Ví dụ:\n"
+                '    cfg.data.mix.sources = {\n'
+                '        "wiki" : ("data/wiki/*.parquet", 0.50),\n'
+                '        "books": ("data/books/*.parquet", 0.50),\n'
+                '    }'
+            )
+
+        names  = list(mix.sources.keys())
+        paths  = [mix.sources[n][0] for n in names]
+        probs  = [mix.sources[n][1] for n in names]
+
+        # Validate probabilities
+        total = sum(probs)
+        if abs(total - 1.0) > 1e-3:
+            raise ValueError(
+                f"Tổng probabilities = {total:.4f}, phải = 1.0\n"
+                f"Sources: { {n: p for n, p in zip(names, probs)} }"
+            )
+
+        print(f"  Mix sources ({len(names)}):")
+        for name, path, prob in zip(names, paths, probs):
+            print(f"    {name:<12} {prob*100:.0f}%  {path}")
+        print(f"  stopping_strategy: {mix.stopping_strategy}")
+
+        datasets = [
+            load_dataset("parquet", data_files=path, split="train", streaming=True)
+            for path in paths
+        ]
+
+        mixed = interleave_datasets(
+            datasets,
+            probabilities=probs,
+            seed=42,
+            stopping_strategy=mix.stopping_strategy,
+        )
+
+        return mixed.shuffle(seed=42, buffer_size=mix.shuffle_buffer)
+
+    def _extract_text(self, sample: dict) -> str | None:
+        text = sample.get(self.cfg.data.parquet_text_col)
+        if not isinstance(text, str):
+            return None
+        return text.strip() or None
