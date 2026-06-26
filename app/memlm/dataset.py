@@ -402,13 +402,14 @@ class ChunkedMixLoader(_BaseChunkedLoader):
             )
 
         print(f"  stopping_strategy : {mix.stopping_strategy}")
-        print(f"  shuffle_buffer    : {mix.shuffle_buffer:,}")
+        print(f"  shuffle_buffer    : {mix.shuffle_buffer:,} Note: Hiện tại không dùng, muốn dùng edit tại dataset.py")
 
         mixed = interleave_datasets(
             datasets, probabilities=None, # probabilities=probs, tạm thời ko dùng, tự cân bằng bằng phân bổ category
             seed=42, stopping_strategy=mix.stopping_strategy,
         )
-        return mixed.shuffle(seed=42, buffer_size=mix.shuffle_buffer)
+        #return mixed.shuffle(seed=42, buffer_size=mix.shuffle_buffer)
+        return mixed
 
     def _extract_text(self, sample):
         text = sample.get(self.cfg.data.parquet_text_col)
