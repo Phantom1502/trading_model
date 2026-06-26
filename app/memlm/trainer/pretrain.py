@@ -1,25 +1,11 @@
 """
 trainer/pretrain.py — Pretraining trên Wikipedia tiếng Việt
 ================================================================
-Dùng BaseTrainer với compute_loss mặc định (cross-entropy next-token).
-Vòng lặp ngoài cùng: load từng chunk dữ liệu, train, giải phóng, load tiếp.
-
-M (memory) PERSIST xuyên suốt các chunk theo đúng cấu hình
-`persist_memory_across_chunks=True` — chỉ reset M tại document boundary,
-không reset khi chuyển chunk dữ liệu.
-
-────────────────────────────────────────────────────────────────────────────
-RESUME TỪ CHUNK CỤ THỂ (ví dụ chunk 20 bị corrupt, muốn train tiếp từ đó):
-
-ChunkedWikiLoader.skip() ở TẦNG DATASET (dataset.py) — KHÔNG tokenize các
-article thuộc chunk đã bỏ qua. Khác với cách cũ (load + tokenize hết rồi
-mới `continue` bỏ qua), cách này nhanh hơn nhiều khi resume ở chunk lớn.
-────────────────────────────────────────────────────────────────────────────
 """
 
 import torch
 from .base import BaseTrainer
-from dataset import ChunkedWikiLoader
+from dataset import ChunkedWikiLoader, ChunkedMixLoader
 from utils import save_checkpoint, load_checkpoint
 from utils.checkpoint import hf_upload_latest
 
@@ -29,18 +15,15 @@ class PretrainTrainer(BaseTrainer):
     pass
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# PATCH 3: pretrain.py — truyền file_order vào/ra checkpoint
-# Sửa hàm run_pretrain, 3 chỗ được đánh dấu NEW
-# ══════════════════════════════════════════════════════════════════════════
-
 def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int = 0,
                   reset_lr_for_new_round: bool = False):
 
     trainer = PretrainTrainer(cfg, model, tokenizer)
 
-    # ── Resume optimizer/scheduler state ─────────────────────────────────────
-    file_order = None   # NEW: sẽ đọc từ checkpoint nếu có
+    # ── BƯỚC 1: Resume checkpoint TRƯỚC khi tạo loader ───────────────────────
+    # Quan trọng: phải đọc file_order từ checkpoint trước,
+    # vì ChunkedMixLoader._load_dataset() chạy ngay trong super().__init__()
+    file_order = None
     if cfg.train.resume_from:
         state = load_checkpoint(
             cfg.train.resume_from, trainer.model,
@@ -48,9 +31,11 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
         )
         trainer.global_step   = state["global_step"]
         trainer.best_val_loss = state["val_loss"] or float("inf")
-        file_order            = state["file_order"]   # NEW — None nếu checkpoint cũ
+        file_order            = state["file_order"]   # None nếu checkpoint cũ
+
         if start_chunk == 0:
             start_chunk = state["chunk_idx"]
+
         print(f"Resuming từ step {trainer.global_step}, chunk {start_chunk}")
         if file_order:
             print(f"  file_order loaded từ checkpoint ({len(file_order)} sources)")
@@ -69,22 +54,38 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
             for _ in range(trainer.global_step):
                 trainer.scheduler.step()
 
-    # ── Data loader ───────────────────────────────────────────────────────────
+    # ── BƯỚC 2: Tạo loader SAU khi đã có file_order ──────────────────────────
     if data_loader_gen is None:
         if cfg.data.source == "mix":
-            from dataset import ChunkedMixLoader
             data_loader_gen = ChunkedMixLoader(
                 cfg, tokenizer,
                 start_chunk=start_chunk,
-                file_order=file_order,   # NEW — None = shuffle mới, dict = resume
+                file_order=file_order,   # đúng giá trị: None hoặc dict từ checkpoint
+            )
+        elif cfg.data.source == "wikipedia":
+            from dataset import ChunkedWikiLoader
+            data_loader_gen = ChunkedWikiLoader(cfg, tokenizer, start_chunk=start_chunk)
+        elif cfg.data.source == "vtsnlp":
+            from dataset import ChunkedVTSNLPLoader
+            data_loader_gen = ChunkedVTSNLPLoader(
+                cfg, tokenizer, start_chunk=start_chunk,
+                domains=cfg.data.vtsnlp_domains,
+            )
+        elif cfg.data.source == "parquet":
+            from dataset import ChunkedParquetLoader
+            data_loader_gen = ChunkedParquetLoader(
+                cfg, tokenizer,
+                parquet_path=cfg.data.parquet_path,
+                text_col    =cfg.data.parquet_text_col,
+                start_chunk =start_chunk,
             )
         else:
-            data_loader_gen = ChunkedWikiLoader(cfg, tokenizer, start_chunk=start_chunk)
+            raise ValueError(f"cfg.data.source='{cfg.data.source}' không hợp lệ")
 
     hf_repo_id = getattr(cfg.train, "hf_repo_id", None)
     hf_token   = getattr(cfg.train, "hf_token",   None)
 
-    # ── Train loop ────────────────────────────────────────────────────────────
+    # ── BƯỚC 3: Train loop ────────────────────────────────────────────────────
     for train_loader, val_loader in data_loader_gen:
         chunk_idx = data_loader_gen.chunk_count
 
@@ -96,7 +97,7 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
 
         chunk_path = f"{cfg.train.save_dir}/chunk_{chunk_idx}.pt"
 
-        # NEW: lấy file_order từ loader nếu là MixLoader
+        # Lấy file_order hiện tại từ loader để lưu vào checkpoint
         current_file_order = (
             data_loader_gen.file_order
             if hasattr(data_loader_gen, "file_order")
@@ -108,7 +109,7 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
             trainer.model, trainer.optimizer, trainer.scheduler,
             trainer.global_step, chunk_idx, val_loss,
             model_cfg=cfg.model,
-            file_order=current_file_order,   # NEW
+            file_order=current_file_order,
         )
 
         if hf_repo_id:
