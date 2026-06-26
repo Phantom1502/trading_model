@@ -448,99 +448,70 @@ class ChunkedParquetLoader(_BaseChunkedLoader):
 class ChunkedMixLoader(_BaseChunkedLoader):
     """
     Interleave nhiều nguồn parquet local theo tỷ lệ định sẵn.
-    File list được shuffle 1 lần lúc init và lưu vào checkpoint —
-    đảm bảo resume đúng vị trí, không đọc lại file đã qua.
-
+ 
     Ví dụ setup:
         cfg.data.source = "mix"
         cfg.data.mix.sources = {
-            "wiki_vi": ("/content/HLLMDS/wiki_vi/*.parquet", 0.01),
-            "wiki_en": ("/content/HLLMDS/wiki_en/*.parquet", 0.20),
-            "math"   : ("/content/HLLMDS/math/*.parquet",    0.10),
+            "wiki_vi": ("/data/wiki_vi/*.parquet", 0.30),
+            "wiki_en": ("/data/wiki_en/*.parquet", 0.70),
         }
-        cfg.data.mix.stopping_strategy = "all_exhausted"
+        cfg.data.mix.stopping_strategy = "first_exhausted"
         cfg.data.mix.shuffle_buffer    = 10_000
+ 
+    Lưu ý:
+        - sum(probabilities) phải = 1.0
+        - "first_exhausted": dừng khi source nhỏ nhất hết (an toàn với data lệch size)
+        - "all_exhausted"  : oversample source nhỏ cho đến khi tất cả hết
     """
-
-    def __init__(self, cfg, tokenizer, start_chunk: int = 0,
-                 file_order: dict = None):
-        """
-        file_order: dict {source_name: [path1, path2, ...]} từ checkpoint.
-                    None = shuffle mới (lần đầu train).
-        """
-        self._file_order = file_order   # lưu trước khi super().__init__ gọi _load_dataset
-        super().__init__(cfg, tokenizer, start_chunk=start_chunk)
-
-    def _resolve_file_order(self) -> dict:
-        mix   = self.cfg.data.mix
-        order = {}
-
-        for name, (pattern, _) in mix.sources.items():
-            if self._file_order and name in self._file_order:
-                # Source đã có trong checkpoint → dùng lại order cũ
-                order[name] = self._file_order[name]
-                print(f"  [MixLoader] {name}: resume order từ checkpoint ({len(order[name])} files)")
-            else:
-                # Source mới hoặc không có checkpoint → shuffle mới
-                files = sorted(_glob.glob(pattern))
-                if not files:
-                    raise FileNotFoundError(f"Không tìm thấy file: {pattern}")
-                import random as _random
-                _random.shuffle(files)
-                order[name] = files
-                print(f"  [MixLoader] {name}: shuffle mới ({len(files)} files)")
-
-        self._file_order = order
-        return order
-
+ 
     def _load_dataset(self):
         from datasets import interleave_datasets
-
-        mix   = self.cfg.data.mix
-        order = self._resolve_file_order()
-
+ 
+        mix = self.cfg.data.mix
+ 
         if not mix.sources:
-            raise ValueError("cfg.data.mix.sources trống")
-
+            raise ValueError(
+                "cfg.data.mix.sources trống — cần định nghĩa ít nhất 1 source.\n"
+                "Ví dụ:\n"
+                '    cfg.data.mix.sources = {\n'
+                '        "wiki_vi": ("/data/wiki_vi/*.parquet", 0.50),\n'
+                '        "wiki_en": ("/data/wiki_en/*.parquet", 0.50),\n'
+                '    }'
+            )
+ 
         names = list(mix.sources.keys())
+        paths = [mix.sources[n][0] for n in names]
         probs = [mix.sources[n][1] for n in names]
-
+ 
         total = sum(probs)
         if abs(total - 1.0) > 1e-3:
-            raise ValueError(f"Tổng probabilities = {total:.4f}, phải = 1.0")
-
+            raise ValueError(
+                f"Tổng probabilities = {total:.4f}, phải = 1.0\n"
+                f"Sources: { {n: p for n, p in zip(names, probs)} }"
+            )
+ 
         print(f"  Mix sources ({len(names)}):")
-        for name, prob in zip(names, probs):
-            print(f"    {name:<12} {prob*100:.0f}%  ({len(order[name])} files)")
+        for name, path, prob in zip(names, paths, probs):
+            print(f"    {name:<12} {prob*100:.0f}%  {path}")
         print(f"  stopping_strategy : {mix.stopping_strategy}")
         print(f"  shuffle_buffer    : {mix.shuffle_buffer:,}")
-
+ 
         datasets = [
-            load_dataset(
-                "parquet",
-                data_files={"train": order[name]},   # list files theo đúng order
-                split="train",
-                streaming=True,
-            )
-            for name in names
+            load_dataset("parquet", data_files=path, split="train", streaming=True)
+            for path in paths
         ]
-
+ 
         mixed = interleave_datasets(
             datasets,
             probabilities=probs,
             seed=42,
             stopping_strategy=mix.stopping_strategy,
         )
-
+ 
         return mixed.shuffle(seed=42, buffer_size=mix.shuffle_buffer)
-
+ 
     def _extract_text(self, sample: dict) -> str | None:
         text = sample.get(self.cfg.data.parquet_text_col)
         if not isinstance(text, str):
             return None
         return text.strip() or None
-
-    @property
-    def file_order(self) -> dict:
-        """Trả về file order hiện tại — pretrain.py lưu vào checkpoint."""
-        return self._file_order or {}
