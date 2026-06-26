@@ -405,7 +405,7 @@ class ChunkedMixLoader(_BaseChunkedLoader):
         print(f"  shuffle_buffer    : {mix.shuffle_buffer:,}")
 
         mixed = interleave_datasets(
-            datasets, probabilities=probs,
+            datasets, probabilities=None, # probabilities=probs, tạm thời ko dùng, tự cân bằng bằng phân bổ category
             seed=42, stopping_strategy=mix.stopping_strategy,
         )
         return mixed.shuffle(seed=42, buffer_size=mix.shuffle_buffer)

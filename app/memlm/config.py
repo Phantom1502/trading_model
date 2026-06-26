@@ -31,7 +31,7 @@ class MixConfig:
     """
     sources          : dict = field(default_factory=dict)
     stopping_strategy: str  = "first_exhausted"
-    shuffle_buffer   : int  = 256
+    shuffle_buffer   : int  = 10_000
 
 
 
