@@ -94,7 +94,7 @@ class TrainConfig:
     batch_size        : int = 8
     grad_accum         : int = 4
     lr                 : float = 3e-4
-    warmup_steps        : int = 500
+    warmup_steps        : int = 100
     weight_decay        : float = 0.01
     max_grad_norm        : float = 1.0
     epochs_per_chunk     : int = 1     # số epoch train trên mỗi chunk data
@@ -104,7 +104,7 @@ class TrainConfig:
     # nên dùng "chu kỳ giả định": coi như cứ sau `lr_decay_cycle_steps` step
     # thì lr đã decay hết cosine một vòng, rồi WARM RESTART (quay lại đỉnh,
     # decay tiếp). Đây là kỹ thuật SGDR (cosine annealing with warm restarts).
-    lr_decay_cycle_steps : int = 100_000
+    lr_decay_cycle_steps : int = 10_000
     lr_min_ratio          : float = 0.1   # lr thấp nhất = 0.1 * lr (không về 0 tuyệt đối)
 
     log_every            : int = 100
@@ -191,8 +191,8 @@ def get_100m_config() -> Config:
     cfg.model.half_life = 2000
     cfg.model.num_slots = 512
     cfg.data.chunk_size = 10_000
-    cfg.train.batch_size = 16 # chuẩn là 32 * 64 (accumulate) * 2048 (seq_len) = 4M token / step
-    cfg.train.grad_accum = 4 # vì seq = 512 => accum = 2048 * 64 * 32 / (512 * 16) = 8 * 64 = 512, số này quá lớn, nên giảm xuống 512 để tránh OOM trên T4
+    cfg.train.batch_size = 32 # chuẩn là 32 * 64 (accumulate) * 2048 (seq_len) = 4M token / step
+    cfg.train.grad_accum = 64 # vì seq = 512 => accum = 2048 * 64 * 32 / (512 * 16) = 8 * 64 = 512, số này quá lớn, nên giảm xuống 512 để tránh OOM trên T4
     return cfg
 
 def get_110m_config() -> Config:
