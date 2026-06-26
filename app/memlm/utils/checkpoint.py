@@ -1,7 +1,3 @@
-# ══════════════════════════════════════════════════════════════════════════
-# PATCH 2: checkpoint.py — thêm file_order vào save/load
-# Chỉ sửa 2 hàm save_checkpoint và load_checkpoint
-# ══════════════════════════════════════════════════════════════════════════
 import os
 import torch
 
@@ -15,7 +11,6 @@ def save_checkpoint(
     val_loss       : float = None,
     extra           : dict = None,
     model_cfg        = None,
-    file_order       : dict = None,   # NEW: file order của ChunkedMixLoader
 ):
     dirname = os.path.dirname(path)
     if dirname:
@@ -36,8 +31,6 @@ def save_checkpoint(
     if model_cfg is not None:
         from dataclasses import asdict
         ckpt["model_cfg"] = asdict(model_cfg)
-    if file_order is not None:
-        ckpt["file_order"] = file_order   # NEW
 
     torch.save(ckpt, path)
     print(f"  ✓ Saved checkpoint → {path}")
