@@ -190,9 +190,16 @@ def get_100m_config() -> Config:
     cfg.model.max_seq   = 512
     cfg.model.half_life = 2000
     cfg.model.num_slots = 512
+    
     cfg.data.chunk_size = 10_000
-    cfg.train.batch_size = 32 # chuẩn là 32 * 64 (accumulate) * 2048 (seq_len) = 4M token / step
-    cfg.train.grad_accum = 64 # vì seq = 512 => accum = 2048 * 64 * 32 / (512 * 16) = 8 * 64 = 512, số này quá lớn, nên giảm xuống 512 để tránh OOM trên T4
+  
+    cfg.train.lr                   = 3e-4
+    cfg.train.warmup_steps         = 200
+    cfg.train.lr_decay_cycle_steps = 9_800   # 1 cosine cycle
+    cfg.train.lr_min_ratio         = 0.1
+    cfg.train.batch_size           = 32
+    cfg.train.grad_accum           = 64
+    cfg.train.total_chunks         = -1
     return cfg
 
 def get_110m_config() -> Config:
