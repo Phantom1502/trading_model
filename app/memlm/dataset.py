@@ -43,7 +43,7 @@ import random
 import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
-
+import glob as _glob
 
 # Số text tokenize mỗi lần — giữ RAM peak thấp
 TOKENIZE_BATCH = 500
@@ -440,60 +440,92 @@ class ChunkedParquetLoader(_BaseChunkedLoader):
 # ChunkedMixLoader
 # ══════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════
+# PATCH 1: dataset.py — ChunkedMixLoader với shuffle file order
+# Thay thế class ChunkedMixLoader hiện tại bằng version này
+# ══════════════════════════════════════════════════════════════════════════
+
 class ChunkedMixLoader(_BaseChunkedLoader):
     """
     Interleave nhiều nguồn parquet local theo tỷ lệ định sẵn.
+    File list được shuffle 1 lần lúc init và lưu vào checkpoint —
+    đảm bảo resume đúng vị trí, không đọc lại file đã qua.
 
     Ví dụ setup:
         cfg.data.source = "mix"
         cfg.data.mix.sources = {
-            "wiki_vi": ("/data/wiki_vi/*.parquet", 0.30),
-            "wiki_en": ("/data/wiki_en/*.parquet", 0.70),
+            "wiki_vi": ("/content/HLLMDS/wiki_vi/*.parquet", 0.01),
+            "wiki_en": ("/content/HLLMDS/wiki_en/*.parquet", 0.20),
+            "math"   : ("/content/HLLMDS/math/*.parquet",    0.10),
         }
-        cfg.data.mix.stopping_strategy = "first_exhausted"
+        cfg.data.mix.stopping_strategy = "all_exhausted"
         cfg.data.mix.shuffle_buffer    = 10_000
-
-    Lưu ý:
-        - sum(probabilities) phải = 1.0
-        - "first_exhausted": dừng khi source nhỏ nhất hết (an toàn với data lệch size)
-        - "all_exhausted"  : oversample source nhỏ cho đến khi tất cả hết
     """
+
+    def __init__(self, cfg, tokenizer, start_chunk: int = 0,
+                 file_order: dict = None):
+        """
+        file_order: dict {source_name: [path1, path2, ...]} từ checkpoint.
+                    None = shuffle mới (lần đầu train).
+        """
+        self._file_order = file_order   # lưu trước khi super().__init__ gọi _load_dataset
+        super().__init__(cfg, tokenizer, start_chunk=start_chunk)
+
+    def _resolve_file_order(self) -> dict:
+        """
+        Nếu có file_order từ checkpoint → dùng lại (resume đúng thứ tự).
+        Không có → glob + shuffle mới, lưu lại để checkpoint sau.
+        """
+        mix = self.cfg.data.mix
+        if self._file_order is not None:
+            print("  [MixLoader] Resume: dùng lại file order từ checkpoint")
+            return self._file_order
+
+        order = {}
+        for name, (pattern, _) in mix.sources.items():
+            files = sorted(_glob.glob(pattern))
+            if not files:
+                raise FileNotFoundError(
+                    f"Không tìm thấy file nào khớp pattern: {pattern}"
+                )
+            import random as _random
+            _random.shuffle(files)
+            order[name] = files
+            print(f"  [MixLoader] {name}: {len(files)} files (shuffled)")
+
+        self._file_order = order   # lưu lại để caller có thể checkpoint
+        return order
 
     def _load_dataset(self):
         from datasets import interleave_datasets
 
-        mix = self.cfg.data.mix
+        mix   = self.cfg.data.mix
+        order = self._resolve_file_order()
 
         if not mix.sources:
-            raise ValueError(
-                "cfg.data.mix.sources trống — cần định nghĩa ít nhất 1 source.\n"
-                "Ví dụ:\n"
-                '    cfg.data.mix.sources = {\n'
-                '        "wiki_vi": ("/data/wiki_vi/*.parquet", 0.50),\n'
-                '        "wiki_en": ("/data/wiki_en/*.parquet", 0.50),\n'
-                '    }'
-            )
+            raise ValueError("cfg.data.mix.sources trống")
 
         names = list(mix.sources.keys())
-        paths = [mix.sources[n][0] for n in names]
         probs = [mix.sources[n][1] for n in names]
 
         total = sum(probs)
         if abs(total - 1.0) > 1e-3:
-            raise ValueError(
-                f"Tổng probabilities = {total:.4f}, phải = 1.0\n"
-                f"Sources: { {n: p for n, p in zip(names, probs)} }"
-            )
+            raise ValueError(f"Tổng probabilities = {total:.4f}, phải = 1.0")
 
         print(f"  Mix sources ({len(names)}):")
-        for name, path, prob in zip(names, paths, probs):
-            print(f"    {name:<12} {prob*100:.0f}%  {path}")
+        for name, prob in zip(names, probs):
+            print(f"    {name:<12} {prob*100:.0f}%  ({len(order[name])} files)")
         print(f"  stopping_strategy : {mix.stopping_strategy}")
         print(f"  shuffle_buffer    : {mix.shuffle_buffer:,}")
 
         datasets = [
-            load_dataset("parquet", data_files=path, split="train", streaming=True)
-            for path in paths
+            load_dataset(
+                "parquet",
+                data_files={"train": order[name]},   # list files theo đúng order
+                split="train",
+                streaming=True,
+            )
+            for name in names
         ]
 
         mixed = interleave_datasets(
@@ -510,3 +542,8 @@ class ChunkedMixLoader(_BaseChunkedLoader):
         if not isinstance(text, str):
             return None
         return text.strip() or None
+
+    @property
+    def file_order(self) -> dict:
+        """Trả về file order hiện tại — pretrain.py lưu vào checkpoint."""
+        return self._file_order or {}
