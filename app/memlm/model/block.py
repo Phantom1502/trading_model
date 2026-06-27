@@ -80,10 +80,16 @@ class MemoryBlock(nn.Module):
         # MemoryLayer tự _scaled_init trong __init__ của nó
 
     # ── Memory management ─────────────────────────────────────────────────────
+    def init_memory(self, batch_size: int, device: torch.device):
+        if self.use_memory:
+            self.memory = torch.zeros(
+                batch_size, self.num_slots, self.d_model, device=device
+            )
+            nn.init.normal_(self.memory, std=0.02)
 
     def reset_memory(self, batch_size: int, device: torch.device):
-        """No-op — memory persist xuyên suốt training."""
-        pass
+        if self.use_memory and self.memory is None:
+            self.init_memory(batch_size, device)
 
     def reset_memory_rows(self, mask: torch.Tensor, device: torch.device):
         """No-op — memory persist theo document."""
