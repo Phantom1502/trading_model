@@ -260,8 +260,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="HellaSwag benchmark cho MemoryLM")
     parser.add_argument("checkpoints", nargs="+", help="Path tới checkpoint .pt")
-    parser.add_argument("--n-samples", type=int, default=500,
-                        help="Số item evaluate (default 500, max ~10k)")
+    parser.add_argument("--n-samples", type=int, default=10000,
+                        help="Số item evaluate (default 10000, max ~10k)")
     parser.add_argument("--split",     type=str, default="validation",
                         choices=["validation", "train"],
                         help="Split của HellaSwag dataset")
