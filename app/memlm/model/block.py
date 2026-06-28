@@ -89,7 +89,7 @@ class MemoryBlock(nn.Module):
 
     def reset_memory(self, batch_size: int, device: torch.device):
         if self.use_memory and self.memory is None:
-            self.init_memory(batch_size, device)
+            self.init_memory(device)
 
     def reset_memory_rows(self, mask: torch.Tensor, device: torch.device):
         """No-op — memory persist theo document."""
