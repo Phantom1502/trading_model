@@ -80,12 +80,12 @@ class MemoryBlock(nn.Module):
         # MemoryLayer tự _scaled_init trong __init__ của nó
 
     # ── Memory management ─────────────────────────────────────────────────────
-    def init_memory(self, batch_size: int, device: torch.device):
-        if self.use_memory:
-            self.memory = torch.zeros(
-                batch_size, self.num_slots, self.d_model, device=device
-            )
-            nn.init.normal_(self.memory, std=0.02)
+    def init_memory(self, device):
+        """Gọi một lần khi bắt đầu, không phụ thuộc batch size."""
+        self.memory = torch.zeros(
+            1, self.cfg.num_slots, self.cfg.d_model,
+            device=device
+        )
 
     def reset_memory(self, batch_size: int, device: torch.device):
         if self.use_memory and self.memory is None:
@@ -117,9 +117,15 @@ class MemoryBlock(nn.Module):
 
         # 2. Memory (nếu có)
         if self.use_memory and self.memory is not None:
-            gated_out, memory_new = self.mem_layer(x_post, self.memory)
-            x_new       = x_post + gated_out
-            self.memory = memory_new.detach()
+            B = x_post.size(0)
+            # Expand theo batch, nhưng memory gốc vẫn là (1, S, D)
+            mem_expanded = self.memory.expand(B, -1, -1)  # không copy data
+
+            gated_out, memory_new = self.mem_layer(x_post, mem_expanded)
+            x_new = x_post + gated_out
+            
+            # Gộp lại về (1, S, D) — average across batch
+            self.memory = memory_new.detach().mean(dim=0, keepdim=True)
         else:
             x_new = x_post
 
