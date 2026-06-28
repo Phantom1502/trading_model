@@ -15,7 +15,7 @@ Hoặc trong notebook cell:
 
 import torch
 
-from config import get_100m_config, get_small_config
+from config import get_100m_config, get_small_config, get_110m_config
 from tokenizer import load_tokenizer
 from dataset import ChunkedWikiLoader, ChunkedVTSNLPLoader, ChunkedParquetLoader, ChunkedMixLoader
 from model import build_model

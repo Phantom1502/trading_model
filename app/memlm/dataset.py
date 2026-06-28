@@ -10,13 +10,8 @@ Hỗ trợ 4 nguồn dữ liệu:
     ChunkedParquetLoader — file .parquet local (1 source)
     ChunkedMixLoader     — interleave nhiều source parquet theo tỷ lệ
 
-FIX RAM: tokenize streaming theo batch nhỏ (TOKENIZE_BATCH=500)
-    Phiên bản cũ gom hết chunk_size rồi tokenize một lần → peak RAM ~12GB
-    Phiên bản mới tokenize từng 500 text, giải phóng ngay → peak RAM ~300MB
-
-2 chế độ Dataset:
-    TokenChunkDataset        — segment độc lập, shuffle tự do
-    SequentialDocumentDataset — segment tuần tự theo document, M carry-over
+FIX RAM: tokenize streaming theo batch nhỏ (TOKENIZE_BATCH=128)
+    Tokenize từng 128 text, giải phóng ngay → peak RAM thấp.
 """
 
 import glob
@@ -26,7 +21,7 @@ from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 
 
-TOKENIZE_BATCH = 128   # số text tokenize mỗi lần để giữ RAM peak thấp
+TOKENIZE_BATCH = 128
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -38,7 +33,7 @@ class TokenChunkDataset(Dataset):
 
     def __init__(self, documents: list[list[int]], seg_len: int, min_tail_len: int = 64):
         self.samples = []
-        n_skipped = 0
+        n_skipped    = 0
 
         for doc in documents:
             if len(doc) < (seg_len + 1) // 2:
@@ -55,12 +50,7 @@ class TokenChunkDataset(Dataset):
             if len(tail) >= min_tail_len + 1:
                 chunks.append(doc[-(seg_len + 1):])
 
-            for i, chunk in enumerate(chunks):
-                self.samples.append({
-                    "ids"         : chunk,
-                    "is_doc_start": i == 0,
-                    "is_doc_end"  : i == len(chunks) - 1,
-                })
+            self.samples.extend(chunks)
 
         if n_skipped:
             print(f"  [TokenChunkDataset] Bỏ qua {n_skipped} doc ngắn hơn {(seg_len+1)//2} token")
@@ -69,20 +59,14 @@ class TokenChunkDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        item = self.samples[idx]
-        ids  = torch.tensor(item["ids"], dtype=torch.long)
-        return {
-            "input_ids"   : ids[:-1],
-            "labels"      : ids[1:],
-            "is_doc_start": item["is_doc_start"],
-            "is_doc_end"  : item["is_doc_end"],
-        }
+        ids = torch.tensor(self.samples[idx], dtype=torch.long)
+        return {"input_ids": ids[:-1], "labels": ids[1:]}
 
 
 class SequentialDocumentDataset(Dataset):
     """
     Documents shuffle ngẫu nhiên, nhưng segment của cùng document xếp tuần tự.
-    Dùng DataLoader(shuffle=False) — M carry-over đúng cách.
+    Dùng DataLoader(shuffle=False).
     """
 
     def __init__(self, documents: list[list[int]], seg_len: int,
@@ -90,7 +74,7 @@ class SequentialDocumentDataset(Dataset):
         if stride is None:
             stride = seg_len
 
-        doc_list = [d for d in documents if len(d) >= (seg_len + 1) // 2]
+        doc_list  = [d for d in documents if len(d) >= (seg_len + 1) // 2]
         n_skipped = len(documents) - len(doc_list)
         if n_skipped:
             print(f"  [SequentialDocumentDataset] Bỏ qua {n_skipped} doc ngắn hơn {(seg_len+1)//2} token")
@@ -101,7 +85,7 @@ class SequentialDocumentDataset(Dataset):
         self.samples = []
         for doc in doc_list:
             windows = []
-            start = 0
+            start   = 0
             while start + seg_len + 1 <= len(doc):
                 windows.append(doc[start : start + seg_len + 1])
                 start += stride
@@ -111,25 +95,14 @@ class SequentialDocumentDataset(Dataset):
             if tail_covered_end < len(doc) and len(doc) - tail_covered_end >= 64:
                 windows.append(doc[-(seg_len + 1):])
 
-            for i, chunk in enumerate(windows):
-                self.samples.append({
-                    "ids"         : chunk,
-                    "is_doc_start": i == 0,
-                    "is_doc_end"  : i == len(windows) - 1,
-                })
+            self.samples.extend(windows)
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        item = self.samples[idx]
-        ids  = torch.tensor(item["ids"], dtype=torch.long)
-        return {
-            "input_ids"   : ids[:-1],
-            "labels"      : ids[1:],
-            "is_doc_start": item["is_doc_start"],
-            "is_doc_end"  : item["is_doc_end"],
-        }
+        ids = torch.tensor(self.samples[idx], dtype=torch.long)
+        return {"input_ids": ids[:-1], "labels": ids[1:]}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -137,25 +110,16 @@ class SequentialDocumentDataset(Dataset):
 # ══════════════════════════════════════════════════════════════════════════
 
 def collate_fn(batch, pad_id: int = 0):
-    max_len      = max(item["input_ids"].size(0) for item in batch)
-    input_ids    = torch.full((len(batch), max_len), pad_id, dtype=torch.long)
-    labels       = torch.full((len(batch), max_len), -100,   dtype=torch.long)
-    is_doc_start = []
-    is_doc_end   = []
+    max_len   = max(item["input_ids"].size(0) for item in batch)
+    input_ids = torch.full((len(batch), max_len), pad_id,  dtype=torch.long)
+    labels    = torch.full((len(batch), max_len), -100,    dtype=torch.long)
 
     for i, item in enumerate(batch):
         L = item["input_ids"].size(0)
         input_ids[i, :L] = item["input_ids"]
         labels[i, :L]    = item["labels"]
-        is_doc_start.append(item["is_doc_start"])
-        is_doc_end.append(item["is_doc_end"])
 
-    return {
-        "input_ids"   : input_ids,
-        "labels"      : labels,
-        "is_doc_start": torch.tensor(is_doc_start, dtype=torch.bool),
-        "is_doc_end"  : torch.tensor(is_doc_end,   dtype=torch.bool),
-    }
+    return {"input_ids": input_ids, "labels": labels}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -168,14 +132,14 @@ def make_dataloaders(train_docs, val_docs, cfg, pad_id):
     collate = lambda b: collate_fn(b, pad_id)
 
     if getattr(cfg.data, "sequential_mode", False):
-        stride   = getattr(cfg.data, "window_stride", seg_len)
-        train_ds = SequentialDocumentDataset(train_docs, seg_len, stride=stride, shuffle_docs=True)
-        val_ds   = TokenChunkDataset(val_docs, seg_len)
+        stride       = getattr(cfg.data, "window_stride", seg_len)
+        train_ds     = SequentialDocumentDataset(train_docs, seg_len, stride=stride, shuffle_docs=True)
+        val_ds       = TokenChunkDataset(val_docs, seg_len)
         train_loader = DataLoader(train_ds, batch_size=bs, shuffle=False, collate_fn=collate, num_workers=0)
         val_loader   = DataLoader(val_ds,   batch_size=bs, shuffle=False, collate_fn=collate, num_workers=0)
     else:
-        train_ds = TokenChunkDataset(train_docs, seg_len)
-        val_ds   = TokenChunkDataset(val_docs,   seg_len)
+        train_ds     = TokenChunkDataset(train_docs, seg_len)
+        val_ds       = TokenChunkDataset(val_docs,   seg_len)
         train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True,  collate_fn=collate, num_workers=0)
         val_loader   = DataLoader(val_ds,   batch_size=bs, shuffle=False, collate_fn=collate, num_workers=0)
 
@@ -201,7 +165,7 @@ class _BaseChunkedLoader:
 
         if start_chunk > 0:
             n_skip = start_chunk * self.chunk_size
-            print(f"Resume: skip {n_skip:,} sample đầu (tương ứng {start_chunk} chunk đã train)...")
+            print(f"Resume: skip {n_skip:,} sample đầu ({start_chunk} chunk đã train)...")
             self.raw_stream = self.raw_stream.skip(n_skip)
 
         self.stream_iter = iter(self.raw_stream)
@@ -215,10 +179,7 @@ class _BaseChunkedLoader:
         raise NotImplementedError
 
     def _load_one_chunk(self) -> list[list[int]] | None:
-        """
-        Tokenize streaming theo batch nhỏ (TOKENIZE_BATCH) — giữ RAM peak thấp.
-        Giải phóng raw text ngay sau khi tokenize, không giữ cả chunk trong RAM.
-        """
+        """Tokenize streaming theo batch nhỏ — giữ RAM peak thấp."""
         documents   = []
         batch_texts = []
 
@@ -277,7 +238,6 @@ class _BaseChunkedLoader:
             f"val: {len(val_loader.dataset)} | "
             f"mode: {mode}"
         )
-
         return train_loader, val_loader
 
 
@@ -294,8 +254,7 @@ class ChunkedWikiLoader(_BaseChunkedLoader):
         )
 
     def _extract_text(self, sample):
-        text = sample.get("text", "").strip()
-        return text or None
+        return sample.get("text", "").strip() or None
 
 
 class ChunkedVTSNLPLoader(_BaseChunkedLoader):
@@ -311,13 +270,10 @@ class ChunkedVTSNLPLoader(_BaseChunkedLoader):
     def _extract_text(self, sample):
         if self.domains and sample.get("domain") not in self.domains:
             return None
-        text = sample.get("text", "").strip()
-        return text or None
+        return sample.get("text", "").strip() or None
 
 
 class ChunkedParquetLoader(_BaseChunkedLoader):
-    """Load 1 file .parquet local theo từng chunk, streaming."""
-
     def __init__(self, cfg, tokenizer, parquet_path, text_col="text",
                  start_chunk=0, filter_fn=None):
         self.parquet_path = parquet_path
@@ -344,48 +300,31 @@ class ChunkedParquetLoader(_BaseChunkedLoader):
 class ChunkedMixLoader(_BaseChunkedLoader):
     """
     Interleave nhiều source parquet local theo tỷ lệ định sẵn.
-    File list mỗi source được shuffle ngẫu nhiên khi init —
-    không track, không lưu, resume chỉ cần load lại weight.
 
     Ví dụ:
         cfg.data.source = "mix"
         cfg.data.mix.sources = {
-            "wiki_vi" : ("/data/wiki_vi/*.parquet",  0.05),
-            "wiki_en" : ("/data/wiki_en/*.parquet",  0.30),
-            "math"    : ("/data/math/*.parquet",      0.10),
-            "social_vi": ("/data/social_vi/*.parquet", 0.25),
-            "python"  : ("/data/python/*.parquet",    0.30),
+            "wiki_vi"  : ("/data/wiki_vi/*.parquet",   0.05),
+            "wiki_en"  : ("/data/wiki_en/*.parquet",   0.30),
+            "math"     : ("/data/math/*.parquet",       0.10),
+            "social_vi": ("/data/social_vi/*.parquet",  0.25),
+            "python"   : ("/data/python/*.parquet",     0.30),
         }
         cfg.data.mix.stopping_strategy = "all_exhausted"
-        cfg.data.mix.shuffle_buffer    = 10_000
-
-    Lưu ý:
-        - sum(probabilities) phải = 1.0
-        - "all_exhausted"   : oversample source nhỏ (khuyến nghị khi size lệch nhau)
-        - "first_exhausted" : dừng khi source nhỏ nhất hết
     """
 
     def _load_dataset(self):
         from datasets import interleave_datasets
 
         mix = self.cfg.data.mix
-
         if not mix.sources:
-            raise ValueError(
-                "cfg.data.mix.sources trống.\n"
-                "Ví dụ:\n"
-                '    cfg.data.mix.sources = {\n'
-                '        "wiki_vi": ("/data/wiki_vi/*.parquet", 0.50),\n'
-                '        "wiki_en": ("/data/wiki_en/*.parquet", 0.50),\n'
-                '    }'
-            )
+            raise ValueError("cfg.data.mix.sources trống.")
 
         names = list(mix.sources.keys())
         probs = [mix.sources[n][1] for n in names]
 
-        total = sum(probs)
-        if abs(total - 1.0) > 1e-3:
-            raise ValueError(f"Tổng probabilities = {total:.4f}, phải = 1.0")
+        if abs(sum(probs) - 1.0) > 1e-3:
+            raise ValueError(f"Tổng probabilities = {sum(probs):.4f}, phải = 1.0")
 
         print(f"  Mix sources ({len(names)}):")
         datasets = []
@@ -401,15 +340,10 @@ class ChunkedMixLoader(_BaseChunkedLoader):
                              split="train", streaming=True)
             )
 
-        print(f"  stopping_strategy : {mix.stopping_strategy}")
-        print(f"  shuffle_buffer    : {mix.shuffle_buffer:,} Note: Hiện tại không dùng, muốn dùng edit tại dataset.py")
-
-        mixed = interleave_datasets(
-            datasets, probabilities=None, # probabilities=probs, tạm thời ko dùng, tự cân bằng bằng phân bổ category
+        return interleave_datasets(
+            datasets, probabilities=None,
             seed=42, stopping_strategy=mix.stopping_strategy,
         )
-        #return mixed.shuffle(seed=42, buffer_size=mix.shuffle_buffer)
-        return mixed
 
     def _extract_text(self, sample):
         text = sample.get(self.cfg.data.parquet_text_col)

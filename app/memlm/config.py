@@ -24,7 +24,7 @@ class MixConfig:
         Lưu ý: sum(probabilities) phải = 1.0
 
     stopping_strategy:
-        "first_exhausted" — dừng khi source nào hết trước (an toàn với data lệch size)
+        "first_exhausted" — dừng khi source nào hết trước
         "all_exhausted"   — oversample source nhỏ cho đến khi tất cả hết
 
     shuffle_buffer: số sample giữ trong buffer để shuffle chéo giữa các source
@@ -34,117 +34,85 @@ class MixConfig:
     shuffle_buffer   : int  = 10_000
 
 
-
-
-
 @dataclass
 class ModelConfig:
     """Kiến trúc model."""
-    vocab_size  : int = 64001        # PhoBERT vocab size (set lại sau khi load tokenizer)
-    d_model     : int = 512
-    n_heads     : int = 8
-    n_layers    : int = 8
-    max_seq     : int = 512
-    dropout     : float = 0.1
+    vocab_size : int   = 64001
+    d_model    : int   = 512
+    n_heads    : int   = 8
+    n_layers   : int   = 8
+    max_seq    : int   = 512
+    dropout    : float = 0.1
+    rope_base  : float = 10000.0
+
 
 @dataclass
 class DataConfig:
     """Cấu hình dữ liệu và cách load incremental."""
     # source: "wikipedia" | "vtsnlp" | "parquet" | "mix"
-    #   "mix" — dùng MixConfig bên dưới, interleave nhiều nguồn parquet local
     source         : str = "wikipedia"
 
     dataset_name   : str = "wikimedia/wikipedia"
     dataset_subset : str = "20231101.vi"
 
-    vtsnlp_domains  : list = None
+    vtsnlp_domains : list = None
 
-    # ── Local parquet (sách, corpus nội bộ) ─────────────────────────────
-    # Chỉ áp dụng khi source="parquet".
-    # parquet_path     : đường dẫn tới file .parquet (absolute hoặc relative)
-    # parquet_text_col : tên cột chứa văn bản (mặc định "text")
-    # Lọc theo metadata (author, genre, ...): dùng filter_fn khi khởi tạo
-    # ChunkedParquetLoader trực tiếp thay vì qua main() — xem train.py.
+    # Local parquet
     parquet_path     : str = ""
     parquet_text_col : str = "text"
 
-    # ── Mix config — chỉ dùng khi source="mix" ──────────────────────────
+    # Mix config — chỉ dùng khi source="mix"
     mix: MixConfig = field(default_factory=MixConfig)
 
-    # ── Sequential / sliding window mode ────────────────────────────────
-    # sequential_mode=True: dùng SequentialDocumentDataset — M thực sự
-    # carry-over xuyên suốt document thay vì reset sau mỗi segment.
-    # Bật khi train document dài (sách, bài báo) để M học context dài.
+    # Sequential / sliding window mode
     sequential_mode : bool = False
     window_stride   : int  = None
 
-    chunk_size     : int = 10_000
-    seg_len        : int = 512
-    min_text_len   : int = 200
+    chunk_size     : int   = 10_000
+    seg_len        : int   = 512
+    min_text_len   : int   = 200
     val_ratio      : float = 0.01
-    cache_dir      : str = "./data_cache"
+    cache_dir      : str   = "./data_cache"
 
 
 @dataclass
 class TrainConfig:
     """Cấu hình quá trình train."""
-    batch_size        : int = 8
-    grad_accum         : int = 4
-    lr                 : float = 3e-4
-    warmup_steps        : int = 100
-    weight_decay        : float = 0.01
-    max_grad_norm        : float = 1.0
-    epochs_per_chunk     : int = 1     # số epoch train trên mỗi chunk data
-    total_chunks         : int = -1    # -1 = train hết toàn bộ dataset
+    batch_size        : int   = 8
+    grad_accum        : int   = 4
+    lr                : float = 3e-4
+    warmup_steps      : int   = 100
+    weight_decay      : float = 0.01
+    max_grad_norm     : float = 1.0
+    epochs_per_chunk  : int   = 1
+    total_chunks      : int   = -1    # -1 = train hết toàn bộ dataset
 
-    # LR decay — KHÔNG biết trước tổng số step thật (streaming dataset),
-    # nên dùng "chu kỳ giả định": coi như cứ sau `lr_decay_cycle_steps` step
-    # thì lr đã decay hết cosine một vòng, rồi WARM RESTART (quay lại đỉnh,
-    # decay tiếp). Đây là kỹ thuật SGDR (cosine annealing with warm restarts).
-    lr_decay_cycle_steps : int = 10_000
-    lr_min_ratio          : float = 0.1   # lr thấp nhất = 0.1 * lr (không về 0 tuyệt đối)
+    # Cosine annealing with warm restarts (SGDR)
+    lr_decay_cycle_steps : int   = 10_000
+    lr_min_ratio         : float = 0.1
 
-    log_every            : int = 100
-    eval_every            : int = 500
-    save_every            : int = 1000
+    log_every  : int = 100
+    eval_every : int = 500
+    save_every : int = 1000
 
-    save_dir              : str = "./checkpoints"
-    resume_from            : Optional[str] = None   # path checkpoint để resume
+    save_dir    : str           = "./checkpoints"
+    resume_from : Optional[str] = None
 
-    device                 : str = "cuda"            # tự detect trong code
-    mixed_precision         : bool = True
+    device          : str  = "cuda"
+    mixed_precision : bool = True
 
+    # HuggingFace Hub upload
+    hf_repo_id : Optional[str] = None
+    hf_token   : Optional[str] = None
 
-"""
-PATCH cho config.py — chỉ thay TokenizerConfig.
-Thay thế toàn bộ class TokenizerConfig hiện tại bằng đoạn này.
-"""
 
 @dataclass
 class TokenizerConfig:
     """Cấu hình tokenizer."""
-
-    # ── Custom BPE (khuyến nghị) ─────────────────────────────────────────
-    # Sau khi chạy scripts/train_tokenizer.py, đặt path output ở đây.
-    # use_fast=True hoạt động bình thường với PreTrainedTokenizerFast.
-    #
-    # ── PhoBERT legacy ───────────────────────────────────────────────────
-    # pretrained_name = "vinai/phobert-base"
-    # use_fast        = False   (PhoBERT không có Fast tokenizer)
-    # Nếu truyền use_fast=True với PhoBERT, tokenizer.py tự fallback + warn.
-    #
-    pretrained_name : str  = "custom_tokenizer"   # path local sau train
-    use_fast        : bool = True                  # True cho custom BPE
-
-    # strict_chart_mode=True (mặc định): price token (O_x/H_x/L_x/C_x) CHỈ
-    # được nhận diện khi nằm trong cặp <chart>...</chart>. An toàn khi trộn
-    # corpus sách/Wikipedia với dữ liệu trading.
-    # Tắt (False) CHỈ khi train thuần dữ liệu trading.
+    pretrained_name  : str  = "custom_tokenizer"
+    use_fast         : bool = True
     strict_chart_mode: bool = True
-
-    # Số bin giá cho mỗi loại O/H/L/C. Tổng price token = n_price_bins×4 + 2
-    # 1024 bin → price vocab = 4098 tokens
-    n_price_bins    : int  = 1024
+    n_price_bins     : int  = 1024
 
 
 @dataclass
@@ -154,8 +122,7 @@ class Config:
     data      : DataConfig      = field(default_factory=DataConfig)
     train     : TrainConfig     = field(default_factory=TrainConfig)
     tokenizer : TokenizerConfig = field(default_factory=TokenizerConfig)
-
-    seed: int = 42
+    seed      : int             = 42
 
 
 def get_default_config() -> Config:
@@ -165,12 +132,12 @@ def get_default_config() -> Config:
 def get_small_config() -> Config:
     """Config nhỏ để test nhanh trên máy yếu / Colab free tier."""
     cfg = Config()
-    cfg.model.d_model   = 64
-    cfg.model.n_heads   = 2
-    cfg.model.n_layers  = 2
-    cfg.model.max_seq   = 64
-    cfg.data.chunk_size = 2_000
-    cfg.data.seg_len    = 64
+    cfg.model.d_model    = 64
+    cfg.model.n_heads    = 2
+    cfg.model.n_layers   = 2
+    cfg.model.max_seq    = 64
+    cfg.data.chunk_size  = 2_000
+    cfg.data.seg_len     = 64
     cfg.train.batch_size = 4
     return cfg
 
@@ -178,35 +145,32 @@ def get_small_config() -> Config:
 def get_100m_config() -> Config:
     """Config ~100M params cho Colab T4."""
     cfg = Config()
-    cfg.model.d_model   = 512
-    cfg.model.n_heads   = 8
-    cfg.model.n_layers  = 8
-    cfg.model.max_seq   = 512
-    cfg.model.half_life = 2000
-    cfg.model.num_slots = 512
-    
+    cfg.model.d_model  = 512
+    cfg.model.n_heads  = 8
+    cfg.model.n_layers = 8
+    cfg.model.max_seq  = 512
+
     cfg.data.chunk_size = 10_000
-  
+
     cfg.train.lr                   = 3e-4
     cfg.train.warmup_steps         = 200
-    cfg.train.lr_decay_cycle_steps = 9_800   # 1 cosine cycle
+    cfg.train.lr_decay_cycle_steps = 9_800
     cfg.train.lr_min_ratio         = 0.1
     cfg.train.batch_size           = 32
     cfg.train.grad_accum           = 64
     cfg.train.total_chunks         = -1
     return cfg
 
+
 def get_110m_config() -> Config:
     """Config ~110M params tối ưu cho Colab T4."""
     cfg = Config()
-    cfg.model.d_model   = 768      # Tăng từ 512 -> 768
-    cfg.model.n_heads   = 12       # Tăng từ 8 -> 12 (để 768 / 12 = 64)
-    cfg.model.n_layers  = 12       # Tăng từ 8 -> 12
-    cfg.model.max_seq   = 512     
-    
-    cfg.data.chunk_size = 10_000
-    
-    # Điều chỉnh Train để tránh OOM trên T4
-    cfg.train.batch_size = 8       # Giảm batch size xuống một chút vì mô hình to hơn
-    cfg.train.grad_accum = 4       # Tăng grad_accum để giữ nguyên Effective Batch Size = 32
+    cfg.model.d_model  = 576
+    cfg.model.n_heads  = 9
+    cfg.model.n_layers = 30
+    cfg.model.max_seq  = 2048
+
+    cfg.data.chunk_size  = 10_000
+    cfg.train.batch_size = 8
+    cfg.train.grad_accum = 4
     return cfg

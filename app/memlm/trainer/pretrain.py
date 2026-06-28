@@ -1,26 +1,25 @@
 """
-trainer/pretrain.py — Pretraining trên Wikipedia tiếng Việt
-================================================================
+trainer/pretrain.py — Pretraining
+===================================
 """
 
 import torch
 from .base import BaseTrainer
-from dataset import ChunkedWikiLoader, ChunkedMixLoader
 from utils import save_checkpoint, load_checkpoint
 from utils.checkpoint import hf_upload_latest
 
 
 class PretrainTrainer(BaseTrainer):
-    """Kế thừa nguyên BaseTrainer — pretrain dùng đúng cross-entropy mặc định."""
+    """Kế thừa nguyên BaseTrainer — pretrain dùng cross-entropy mặc định."""
     pass
 
 
 def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int = 0,
-                  reset_lr_for_new_round: bool = False):
+                 reset_lr_for_new_round: bool = False):
 
     trainer = PretrainTrainer(cfg, model, tokenizer)
 
-    # ── BƯỚC 1: Resume checkpoint TRƯỚC khi tạo loader ───────────────────────
+    # Resume checkpoint
     if cfg.train.resume_from:
         state = load_checkpoint(
             cfg.train.resume_from, trainer.model,
@@ -46,12 +45,11 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
             for _ in range(trainer.global_step):
                 trainer.scheduler.step()
 
+    # Tạo data loader nếu chưa có
     if data_loader_gen is None:
         if cfg.data.source == "mix":
-            data_loader_gen = ChunkedMixLoader(
-                cfg, tokenizer,
-                start_chunk=start_chunk,
-            )
+            from dataset import ChunkedMixLoader
+            data_loader_gen = ChunkedMixLoader(cfg, tokenizer, start_chunk=start_chunk)
         elif cfg.data.source == "wikipedia":
             from dataset import ChunkedWikiLoader
             data_loader_gen = ChunkedWikiLoader(cfg, tokenizer, start_chunk=start_chunk)
@@ -72,10 +70,10 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
         else:
             raise ValueError(f"cfg.data.source='{cfg.data.source}' không hợp lệ")
 
-    hf_repo_id = getattr(cfg.train, "hf_repo_id", None)
-    hf_token   = getattr(cfg.train, "hf_token",   None)
+    hf_repo_id = cfg.train.hf_repo_id
+    hf_token   = cfg.train.hf_token
 
-    # ── BƯỚC 3: Train loop ────────────────────────────────────────────────────
+    # Train loop
     for train_loader, val_loader in data_loader_gen:
         chunk_idx = data_loader_gen.chunk_count
 
@@ -83,8 +81,7 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
         print(f"CHUNK {chunk_idx}")
         print(f"{'='*60}")
 
-        val_loss = trainer.train_one_chunk(train_loader, val_loader, chunk_idx)
-
+        val_loss   = trainer.train_one_chunk(train_loader, val_loader, chunk_idx)
         chunk_path = f"{cfg.train.save_dir}/chunk_{chunk_idx}.pt"
 
         save_checkpoint(

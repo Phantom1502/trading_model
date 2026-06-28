@@ -1,35 +1,13 @@
 """
-trainer/base.py — Logic chung cho mọi loại training (pretrain/SFT/DPO)
-==========================================================================
-Class này chứa:
-    - optimizer/scheduler setup
-    - gradient accumulation
+trainer/base.py — Logic chung cho mọi loại training (pretrain / SFT / DPO)
+============================================================================
+Chứa:
+    - optimizer / scheduler setup (cosine annealing with warm restarts)
+    - gradient accumulation + mixed precision
     - evaluate loop
-Các subclass (PretrainTrainer, SFTTrainer, DPOTrainer) override compute_loss().
+    - benchmark hook
 
-════════════════════════════════════════════════════════════════════════════
-THAY ĐỔI so với phiên bản cũ:
-
-  [FIX 2] Gradient khép kín trong 1 forward pass — không cần bptt_window:
-      block.py lưu self.memory = memory_new.detach() sau mỗi forward.
-      Gradient đã chảy đủ trong batch hiện tại:
-          loss → m_out → read → memory_new → Q_refined → write_attn ✓
-      Graph không tích lũy qua batch → không cần detach_memory() trong train.
-      detach_memory() vẫn giữ trong model API để dùng trong generate/eval.
-
-  [FIX 4] reset_memory_rows thay reset_memory khi is_doc_start:
-      Phiên bản cũ reset toàn bộ batch khi ANY sample là doc_start.
-      Phiên bản mới chỉ reset đúng các sample có is_doc_start=True.
-
-════════════════════════════════════════════════════════════════════════════
-GHI CHÚ về Memory + Gradient:
-
-Model dùng EMA write với alpha CỐ ĐỊNH (xem model/block.py):
-    M_new = alpha * M + (1-alpha) * Q_refined
-
-Gradient trong mỗi batch:
-    loss → read(Q, M_new) → M_new → Q_refined → write_attn ✓
-    self.memory = M_new.detach() — graph cắt ở đây, batch sau dùng giá trị số.
+Subclass override compute_loss() nếu cần loss khác cross-entropy.
 """
 
 import math
@@ -64,18 +42,15 @@ class BaseTrainer:
             "cuda", enabled=(self.device.type == "cuda" and cfg.train.mixed_precision)
         )
 
-        self.global_step    = 0
-        self.chunk_idx      = 0
-        self.best_val_loss  = float("inf")
+        self.global_step   = 0
+        self.chunk_idx     = 0
+        self.best_val_loss = float("inf")
 
         self.logger = TrainLogger(log_every=cfg.train.log_every)
         self._setup_scheduler()
 
     def _setup_scheduler(self):
-        """
-        Warmup tuyến tính rồi cosine decay theo chu kỳ giả định
-        (lr_decay_cycle_steps), lặp lại "warm restart" khi hết chu kỳ.
-        """
+        """Warmup tuyến tính → cosine decay theo chu kỳ (SGDR)."""
         warmup      = self.cfg.train.warmup_steps
         cycle_steps = self.cfg.train.lr_decay_cycle_steps
         min_ratio   = self.cfg.train.lr_min_ratio
@@ -85,13 +60,13 @@ class BaseTrainer:
                 return step / max(warmup, 1)
             step_in_cycle = (step - warmup) % cycle_steps
             progress      = step_in_cycle / max(cycle_steps, 1)
-            cosine = 0.5 * (1 + math.cos(math.pi * progress))
+            cosine        = 0.5 * (1 + math.cos(math.pi * progress))
             return min_ratio + (1 - min_ratio) * cosine
 
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
 
     def compute_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        """Override ở subclass. Mặc định: cross-entropy next-token prediction."""
+        """Mặc định: cross-entropy next-token prediction. Override ở subclass."""
         return F.cross_entropy(
             logits.reshape(-1, logits.size(-1)),
             labels.reshape(-1),
@@ -99,30 +74,16 @@ class BaseTrainer:
         )
 
     def train_one_batch(self, batch: dict, accum_step: int) -> float:
-        """
-        Forward + backward cho MỘT batch.
-
-        Memory tự detach trong block.forward() (self.memory = memory_new.detach()),
-        nên trainer KHÔNG cần gọi detach_memory() — graph không tích lũy qua batch.
-
-        Thay đổi so với phiên bản cũ:
-            - [FIX 4] reset_memory_rows(mask) chỉ reset sample is_doc_start=True
-            - [FIX 2] không cần detach_memory() trong train loop
-        """
-        ids          = batch["input_ids"].to(self.device)
-        labels       = batch["labels"].to(self.device)
-        is_doc_start = batch["is_doc_start"].to(self.device)   # (B,) bool
-
-        B, T = ids.shape
-
-        mask = causal_mask(T, self.device)
+        ids    = batch["input_ids"].to(self.device)
+        labels = batch["labels"].to(self.device)
+        B, T   = ids.shape
+        mask   = causal_mask(T, self.device)
 
         with torch.amp.autocast("cuda", enabled=(self.device.type == "cuda" and self.cfg.train.mixed_precision)):
             logits = self.model(ids, attn_mask=mask)
             loss   = self.compute_loss(logits, labels)
 
-        scaled_loss = loss / self.cfg.train.grad_accum
-        self.scaler.scale(scaled_loss).backward()
+        self.scaler.scale(loss / self.cfg.train.grad_accum).backward()
 
         if (accum_step + 1) % self.cfg.train.grad_accum == 0:
             self.scaler.unscale_(self.optimizer)
@@ -143,24 +104,18 @@ class BaseTrainer:
         for i, batch in enumerate(val_loader):
             if i >= max_batches:
                 break
-
-            ids          = batch["input_ids"].to(self.device)
-            labels       = batch["labels"].to(self.device)
-            is_doc_start = batch["is_doc_start"].to(self.device)
-            B, T         = ids.shape
-
+            ids    = batch["input_ids"].to(self.device)
+            labels = batch["labels"].to(self.device)
+            B, T   = ids.shape
             mask   = causal_mask(T, self.device)
             logits = self.model(ids, attn_mask=mask)
-            loss   = self.compute_loss(logits, labels)
-
-            total += loss.item()
+            total += self.compute_loss(logits, labels).item()
             n     += 1
 
         self.model.train()
         return total / max(n, 1)
 
-    def train_one_chunk(self, train_loader, val_loader, chunk_idx: int):
-        """Train trên một chunk data."""
+    def train_one_chunk(self, train_loader, val_loader, chunk_idx: int) -> float:
         self.model.train()
         self.chunk_idx = chunk_idx
 
@@ -187,7 +142,7 @@ class BaseTrainer:
                         )
 
                     bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
-                    self.model.train()   # [FIX] benchmark gọi model.eval() bên trong nhưng không restore
+                    self.model.train()
                     log_bench(bench, step=self.global_step)
 
                 if self.global_step > 0 and self.global_step % self.cfg.train.save_every == 0:
@@ -200,7 +155,7 @@ class BaseTrainer:
 
         val_loss = self.evaluate(val_loader)
         log_eval(val_loss, step=self.global_step, prefix="  [Chunk end] ")
-        
+
         bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
         log_bench(bench, step=self.global_step)
         return val_loss
