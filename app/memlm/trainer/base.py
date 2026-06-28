@@ -115,14 +115,6 @@ class BaseTrainer:
 
         B, T = ids.shape
 
-        # Khởi tạo memory nếu chưa có (đầu training)
-        if not self.model.has_memory_initialized(batch_size=B):
-            self.model.reset_memory(B, self.device)
-
-        # [FIX 4] Chỉ reset memory của sample nào là doc_start thật sự
-        elif self.cfg.train.reset_memory_per_document and is_doc_start.any():
-            self.model.reset_memory_rows(is_doc_start, self.device)
-
         mask = causal_mask(T, self.device)
 
         with torch.amp.autocast("cuda", enabled=(self.device.type == "cuda" and self.cfg.train.mixed_precision)):
@@ -131,7 +123,6 @@ class BaseTrainer:
 
         scaled_loss = loss / self.cfg.train.grad_accum
         self.scaler.scale(scaled_loss).backward()
-        # Không cần detach_memory() — block.py đã tự detach sau mỗi forward
 
         if (accum_step + 1) % self.cfg.train.grad_accum == 0:
             self.scaler.unscale_(self.optimizer)
@@ -158,18 +149,12 @@ class BaseTrainer:
             is_doc_start = batch["is_doc_start"].to(self.device)
             B, T         = ids.shape
 
-            if not self.model.has_memory_initialized(batch_size=B):
-                self.model.reset_memory(B, self.device)
-            elif is_doc_start.any():
-                self.model.reset_memory_rows(is_doc_start, self.device)
-
             mask   = causal_mask(T, self.device)
             logits = self.model(ids, attn_mask=mask)
             loss   = self.compute_loss(logits, labels)
 
             total += loss.item()
             n     += 1
-            self.model.detach_memory()   # eval luôn detach mỗi batch
 
         self.model.train()
         return total / max(n, 1)

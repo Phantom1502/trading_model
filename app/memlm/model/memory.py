@@ -32,7 +32,6 @@ import math
 import torch
 import torch.nn as nn
 
-from .attention import CrossAttention
 from .layers import RMSNorm
 
 

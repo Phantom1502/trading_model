@@ -1,3 +1,8 @@
 data/
 app/utils/__pycache__/
 test.py
+app/memlm/__pycache__/
+app/__pycache__/
+app/memlm/model/__pycache__/
+app/memlm/trainer/__pycache__/
+app/memlm/utils/__pycache__/

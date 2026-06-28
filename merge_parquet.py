@@ -78,11 +78,11 @@ def merge_parquet_files(input_dir, output_dir, target_size_mb=500):
 
 # --- CẤU HÌNH ĐƯỜNG DẪN TẠI ĐÂY ---
 if __name__ == "__main__":
-    INPUT_DIRECTORY = "E:\LLM Dataset\Python_EduClean"       # Thư mục chứa hàng trăm file 40MB ban đầu
-    OUTPUT_DIRECTORY = "E:\LLM Dataset\Python_EduClean_merged"   # Thư mục chứa các file ~500MB sau khi gom
+    INPUT_DIRECTORY = "E:\LLM Dataset\Mix\merged_output\chunk_00010"       # Thư mục chứa hàng trăm file 40MB ban đầu
+    OUTPUT_DIRECTORY = "E:\LLM Dataset\Mix\merged_output\chunk_00010_merged"   # Thư mục chứa các file ~500MB sau khi gom
     
     merge_parquet_files(
         input_dir=INPUT_DIRECTORY, 
         output_dir=OUTPUT_DIRECTORY, 
-        target_size_mb=700
+        target_size_mb=2000
     )

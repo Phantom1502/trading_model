@@ -68,7 +68,7 @@ def main(cfg=None, start_chunk: int = 0, reset_lr_for_new_round: bool = False):
     ────────────────────────────────────────────────────────────────────────
     """
     if cfg is None:
-        cfg = get_100m_config()
+        cfg = get_small_config()
 
     torch.manual_seed(cfg.seed)
 

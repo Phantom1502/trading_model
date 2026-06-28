@@ -44,11 +44,8 @@ class ModelConfig:
     d_model     : int = 512
     n_heads     : int = 8
     n_layers    : int = 8
-    num_slots   : int = 4            # số memory slot — nhiều "ngăn nhớ" độc lập (khuyên 4 hoặc 8)
-    half_life   : int = 100          # M nhớ tương đương ~100 token cũ (alpha = 0.5^(1/half_life))
     max_seq     : int = 512
     dropout     : float = 0.1
-    use_memory  : bool = True        # False để train baseline so sánh
 
 @dataclass
 class DataConfig:
@@ -117,9 +114,6 @@ class TrainConfig:
     device                 : str = "cuda"            # tự detect trong code
     mixed_precision         : bool = True
 
-    persist_memory_across_chunks: bool = True
-    reset_memory_per_document    : bool = True
-
 
 """
 PATCH cho config.py — chỉ thay TokenizerConfig.
@@ -171,12 +165,12 @@ def get_default_config() -> Config:
 def get_small_config() -> Config:
     """Config nhỏ để test nhanh trên máy yếu / Colab free tier."""
     cfg = Config()
-    cfg.model.d_model   = 256
-    cfg.model.n_heads   = 4
-    cfg.model.n_layers  = 4
-    cfg.model.max_seq   = 256
+    cfg.model.d_model   = 64
+    cfg.model.n_heads   = 2
+    cfg.model.n_layers  = 2
+    cfg.model.max_seq   = 64
     cfg.data.chunk_size = 2_000
-    cfg.data.seg_len    = 256
+    cfg.data.seg_len    = 64
     cfg.train.batch_size = 4
     return cfg
 
