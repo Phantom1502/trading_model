@@ -36,7 +36,7 @@ class TokenChunkDataset(Dataset):
         n_skipped    = 0
 
         for doc in documents:
-            if len(doc) < (seg_len + 1) // 2:
+            if len(doc) < (seg_len + 1) // 4:
                 n_skipped += 1
                 continue
 
@@ -74,7 +74,7 @@ class SequentialDocumentDataset(Dataset):
         if stride is None:
             stride = seg_len
 
-        doc_list  = [d for d in documents if len(d) >= (seg_len + 1) // 2]
+        doc_list  = [d for d in documents if len(d) >= (seg_len + 1) // 4]
         n_skipped = len(documents) - len(doc_list)
         if n_skipped:
             print(f"  [SequentialDocumentDataset] Bỏ qua {n_skipped} doc ngắn hơn {(seg_len+1)//2} token")
