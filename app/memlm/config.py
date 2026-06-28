@@ -172,5 +172,5 @@ def get_110m_config() -> Config:
 
     cfg.data.chunk_size  = 10_000
     cfg.train.batch_size = 8
-    cfg.train.grad_accum = 4
+    cfg.train.grad_accum = 256
     return cfg
