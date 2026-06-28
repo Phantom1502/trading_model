@@ -81,11 +81,11 @@ class MemoryBlock(nn.Module):
 
     # ── Memory management ─────────────────────────────────────────────────────
     def init_memory(self, device):
-        """Gọi một lần khi bắt đầu, không phụ thuộc batch size."""
-        self.memory = torch.zeros(
-            1, self.cfg.num_slots, self.cfg.d_model,
-            device=device
-        )
+        if self.use_memory:
+            self.memory = torch.zeros(
+                1, self.num_slots, self.d_model, device=device
+            )
+            nn.init.normal_(self.memory, std=0.02)
 
     def reset_memory(self, batch_size: int, device: torch.device):
         if self.use_memory and self.memory is None:
