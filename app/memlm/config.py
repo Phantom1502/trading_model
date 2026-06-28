@@ -165,12 +165,18 @@ def get_100m_config() -> Config:
 def get_110m_config() -> Config:
     """Config ~110M params tối ưu cho Colab T4."""
     cfg = Config()
-    cfg.model.d_model  = 576
-    cfg.model.n_heads  = 9
+    cfg.model.d_model  = 512
+    cfg.model.n_heads  = 8
     cfg.model.n_layers = 30
     cfg.model.max_seq  = 2048
 
-    cfg.data.chunk_size  = 10_000
-    cfg.train.batch_size = 8
-    cfg.train.grad_accum = 256
+    cfg.data.chunk_size  = 20_000
+    
+    cfg.train.lr                    = 3e-4
+    cfg.train.warmup_steps          = 500
+    cfg.train.lr_decay_cycle_steps  = 100_000  
+    cfg.train.lr_min_ratio          = 0.1
+    cfg.train.batch_size  = 8
+    cfg.train.grad_accum  = 64
+    cfg.train.total_chunks          = -1
     return cfg
