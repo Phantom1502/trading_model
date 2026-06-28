@@ -1,10 +1,8 @@
-from .memory import MemoryLayer
-from .block import MemoryBlock
+from .block import TransformerBlock
 from .lm import MemoryLM, causal_mask, build_model
 
 __all__ = [
-    "MemoryLayer",
-    "MemoryBlock",
+    "TransformerBlock",
     "MemoryLM",
     "causal_mask",
     "build_model",
