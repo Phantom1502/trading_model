@@ -86,9 +86,9 @@ class MoDRouter(nn.Module):
         # Token được chọn → gate = sigmoid(score) ∈ (0,1)
         # Token không chọn → gate = 0
         # Gradient chảy qua gate → main router được train
-        gate_scores = torch.zeros(B, T, device=x.device)
+        gate_scores = torch.zeros(B, T, device=x.device, dtype=torch.float32)
         gate_scores[selected_mask] = torch.sigmoid(
-            main_scores[selected_mask]
+            main_scores[selected_mask].float()
         )
  
         # Auxiliary router loss — train aux để predict main's decision
@@ -246,7 +246,7 @@ class TransformerBlock(nn.Module):
             # Ghép output:
             # - Token được chọn: gate_score * block_out  (STE: gradient qua gate)
             # - Token không chọn: x nguyên (residual)
-            gate = gate_scores.unsqueeze(-1)           # (B, T, 1)
+            gate = gate_scores.unsqueeze(-1).to(x.dtype)  # match dtype với x (float16/32)
             mask = selected_mask.unsqueeze(-1)         # (B, T, 1)
             out  = torch.where(mask, gate * block_out + (1 - gate) * x, x)
  
@@ -269,6 +269,6 @@ class TransformerBlock(nn.Module):
             else:
                 # Mixed: chạy block trên toàn bộ, sau đó select
                 block_out = self._run_block(x, freqs_cis, attn_mask)
-                gate = gate_scores.unsqueeze(-1)
+                gate = gate_scores.unsqueeze(-1).to(x.dtype)
                 mask = selected_mask.unsqueeze(-1)
                 return torch.where(mask, gate * block_out + (1 - gate) * x, x)

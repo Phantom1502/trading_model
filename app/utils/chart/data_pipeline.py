@@ -431,6 +431,108 @@ class ActionDataGen:
         random.shuffle(balanced)
         return balanced
 
+
+    # ── Generator (stream, không load hết RAM) ───────────────────
+    def _gen_iter(self, df: pd.DataFrame, stride: int = 10):
+        """Yield từng sample — dùng cho file lớn."""
+        df = df.reset_index(drop=True).copy()
+        if "__atr__" not in df.columns:
+            df["__atr__"] = calculate_atr(df, period=self.atr_period)
+
+        last_start = len(df) - self.window_size - self.forward_size
+
+        for t in range(0, last_start + 1, stride):
+            anchor_open = df.loc[t, "Open"]
+            anchor_atr  = df.loc[t, "__atr__"]
+            if anchor_atr <= 0 or np.isnan(anchor_atr):
+                continue
+
+            window_df  = df.iloc[t : t + self.window_size]
+            chart_text = self.codec.encode_window(window_df, anchor_open, anchor_atr)
+            entry_open = df.loc[t + self.window_size, "Open"]
+            entry_bin  = self.codec.quantize_price(entry_open, anchor_open, anchor_atr)
+            forward_df = df.iloc[
+                t + self.window_size : t + self.window_size + self.forward_size
+            ].reset_index(drop=True)
+
+            for action in TRADE_ACTIONS:
+                for sl in self.sl_bins:
+                    for tp in self.tp_bins:
+                        if tp < abs(sl) * self.min_rr:
+                            continue
+                        result = self._simulate(
+                            forward_df, entry_bin, action,
+                            sl, tp, anchor_open, anchor_atr,
+                        )
+                        yield self._format(chart_text, action, sl, tp, result)
+
+    # ── Build to parquet (stream) ─────────────────────────────────
+    def build_to_parquet(
+        self,
+        df          : pd.DataFrame,
+        output_path : str,
+        stride      : int  = 10,
+        source_name : str  = "action_data",
+        tokenizer          = None,
+        compression : str  = "snappy",
+        batch_size  : int  = 10000,
+    ) -> int:
+        """
+        Stream gen → ghi thẳng ra parquet theo batch.
+        Không load toàn bộ vào RAM — phù hợp file M1 nhiều năm.
+
+        tokenizer: optional, cần có method .encode(text) → list token.
+        """
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except ImportError:
+            raise ImportError("Cần cài pyarrow: pip install pyarrow")
+
+        schema = pa.schema([
+            ("text",         pa.string()),
+            ("source",       pa.string()),
+            ("token_length", pa.int64()),
+            ("meta",         pa.string()),
+        ])
+
+        writer = pq.ParquetWriter(output_path, schema, compression=compression)
+        batch  = []
+        total  = 0
+
+        try:
+            for sample in self._gen_iter(df, stride=stride):
+                exit_type = (
+                    "tp_hit"  if "tp_hit"  in sample else
+                    "sl_hit"  if "sl_hit"  in sample else
+                    "timeout"
+                )
+                token_length = len(tokenizer.encode(sample)) if tokenizer else 0
+
+                batch.append({
+                    "text"        : sample,
+                    "source"      : source_name,
+                    "token_length": token_length,
+                    "meta"        : json.dumps({"exit_type": exit_type}),
+                })
+
+                if len(batch) >= batch_size:
+                    writer.write_table(pa.Table.from_pylist(batch, schema=schema))
+                    total += len(batch)
+                    batch  = []
+                    print(f"Đã ghi {total} samples...")
+
+            if batch:
+                writer.write_table(pa.Table.from_pylist(batch, schema=schema))
+                total += len(batch)
+
+        finally:
+            writer.close()
+
+        print(f"✅ {total} samples → {output_path}")
+        return total
+
+
     # ── Distribution check ────────────────────────────────────────
     @staticmethod
     def distribution(samples: List[str]) -> dict:
