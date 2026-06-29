@@ -129,17 +129,20 @@ def split_page_into_paragraphs(
     return paragraphs
 
 
-def extract_paragraphs_per_page(pdf_path: str) -> List[List[str]]:
+def extract_paragraphs_per_page(pdf_path: str) -> Iterator[tuple[int, List[str]]]:
     """
-    Trích đoạn văn của TỪNG TRANG trong 1 PDF text-based.
-    Trả về list theo trang, mỗi phần tử là list các đoạn văn của trang đó
-    (giữ ranh giới trang để biết page_number ở bước sinh record).
+    Trích đoạn văn của TỪNG TRANG dưới dạng GENERATOR.
+    Yields: (page_number, list_các_đoạn_văn_của_trang_đó)
     """
-    pages_paragraphs: List[List[str]] = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            pages_paragraphs.append(split_page_into_paragraphs(page))
-    return pages_paragraphs
+        for page_num, page in enumerate(pdf.pages, start=1):
+            paragraphs = split_page_into_paragraphs(page)
+            
+            if paragraphs:
+                yield page_num, paragraphs
+            
+            # Mẹo nhỏ cho pdfplumber: Xóa cache của trang vừa dùng xong để ép giải phóng RAM
+            page.flush_cache()
 
 
 def is_likely_noise(paragraph: str, min_len: int = 80) -> bool:
@@ -167,23 +170,16 @@ def generate_records_from_pdf(
     tokenizer: Optional[VietnameseTokenizer] = None,
     min_paragraph_len: int = 80,
     source_name: Optional[str] = None,
-) -> List[dict]:
+) -> Iterator[dict]:
     """
-    Đọc 1 file PDF, trả về list record đúng schema.
-
-    Parameters
-    ----------
-    source_name : nếu None, dùng tên file (không kèm đường dẫn) làm `source`.
-                  Truyền riêng nếu muốn gán tên nguồn khác (vd tên sách đẹp hơn
-                  tên file thực tế).
+    Nhận yield từ từng trang PDF, xử lý và yield tiếp ra ngoài.
+    RAM luôn bằng phẳng!
     """
     source_name = source_name or os.path.basename(pdf_path)
-    records: List[dict] = []
-
-    pages_paragraphs = extract_paragraphs_per_page(pdf_path)
-
     paragraph_index = 0
-    for page_number, paragraphs in enumerate(pages_paragraphs, start=1):
+
+    # Lặp trực tiếp từ generator của từng trang
+    for page_number, paragraphs in extract_paragraphs_per_page(pdf_path):
         for paragraph in paragraphs:
             if is_likely_noise(paragraph, min_len=min_paragraph_len):
                 continue
@@ -197,15 +193,14 @@ def generate_records_from_pdf(
                 "paragraph_index": paragraph_index,
                 "char_length":     len(paragraph),
             }
-            records.append({
+            
+            yield {
                 "text":         paragraph,
                 "source":       source_name,
                 "token_length": token_length,
                 "meta":         json.dumps(meta, ensure_ascii=False),
-            })
+            }
             paragraph_index += 1
-
-    return records
 
 
 # XỬ LÝ KHO PDF (nhiều file), GHI RA PARQUET THEO TỪNG FILE
@@ -226,14 +221,8 @@ def build_pdf_dataset_to_parquet(
     pattern: str = "*.pdf",
 ) -> int:
     """
-    Xử lý TOÀN BỘ kho PDF trong `input_dir`, ghi ra `output_path` (parquet),
-    XỬ LÝ TỪNG FILE MỘT — đọc xong 1 sách, sinh record, ghi append, rồi mới
-    sang sách tiếp theo. KHÔNG giữ nội dung nhiều sách trong RAM cùng lúc,
-    an toàn cho kho sách lớn.
-
-    Returns
-    -------
-    int — tổng số đoạn văn (record) đã ghi ra output_path.
+    Xử lý TOÀN BỘ kho PDF bằng cơ chế Streaming hoàn chỉnh.
+    RAM luôn duy trì ở mức tối thiểu bất kể file lớn hay nhỏ.
     """
     if not _HAS_PYARROW:
         raise ImportError("Cần cài pyarrow để ghi Parquet: pip install pyarrow")
@@ -244,28 +233,50 @@ def build_pdf_dataset_to_parquet(
 
     try:
         for pdf_path in iter_pdf_paths(input_dir, pattern=pattern):
+            # Try...except bao quanh TỪNG file để file này lỗi không làm sập cả quá trình
             try:
-                records = generate_records_from_pdf(
+                record_generator = generate_records_from_pdf(
                     pdf_path, tokenizer=tokenizer, min_paragraph_len=min_paragraph_len
                 )
+                
+                current_chunk = []
+                file_records_count = 0
+                
+                for record in record_generator:
+                    current_chunk.append(record)
+
+                    # Cứ gom đủ 5000 đoạn văn thì ghi xuống đĩa để giải phóng RAM
+                    if len(current_chunk) >= 100:
+                        table = pa.Table.from_pylist(current_chunk, schema=schema)
+                        if writer is None:
+                            writer = pq.ParquetWriter(output_path, schema, compression="snappy")
+                        writer.write_table(table)
+                        
+                        file_records_count += len(current_chunk)
+                        total_records += len(current_chunk)
+                        current_chunk = []  # Giải phóng bộ nhớ đệm ngay
+
+                # Ghi nốt phần dư còn lại của file này
+                if current_chunk:
+                    table = pa.Table.from_pylist(current_chunk, schema=schema)
+                    if writer is None:
+                        writer = pq.ParquetWriter(output_path, schema, compression="snappy")
+                    writer.write_table(table)
+                    file_records_count += len(current_chunk)
+                    total_records += len(current_chunk)
+
+                # In tiến độ để theo dõi trực quan
+                if file_records_count == 0:
+                    print(f"⚠️  {os.path.basename(pdf_path)}: không trích được đoạn văn nào.")
+                else:
+                    print(f"[{os.path.basename(pdf_path)}] +{file_records_count} đoạn văn | tổng tích lũy: {total_records}")
+
             except Exception as e:
-                print(f"⚠️  Bỏ qua {pdf_path} do lỗi đọc: {e}")
-                continue
-
-            if not records:
-                print(f"⚠️  {pdf_path}: không trích được đoạn văn nào (có thể là PDF scan ảnh).")
-                continue
-
-            table = pa.Table.from_pylist(records, schema=schema)
-            if writer is None:
-                writer = pq.ParquetWriter(output_path, schema, compression="snappy")
-            writer.write_table(table)
-
-            total_records += len(records)
-            print(f"[{os.path.basename(pdf_path)}] +{len(records)} đoạn văn "
-                  f"| tổng cộng: {total_records}")
+                print(f"❌ Lỗi khi xử lý file {pdf_path}: {e}")
+                continue  # Bỏ qua file lỗi, chạy tiếp file sau
 
     finally:
+        # Luôn đảm bảo đóng writer dù có crash hệ thống nửa chừng
         if writer is not None:
             writer.close()
 
@@ -278,16 +289,6 @@ def build_pdf_dataset_to_parquet(
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Trích đoạn văn từ kho PDF trading (text-based), ghi ra Parquet cùng schema dataset nến."
-    )
-    parser.add_argument("--input-dir", required=True, help="Thư mục chứa các file PDF (quét cả thư mục con)")
-    parser.add_argument("--output",    required=True, help="Đường dẫn file parquet OUTPUT")
-    parser.add_argument("--min-paragraph-len", type=int, default=80,
-                         help="Bỏ qua đoạn văn ngắn hơn N ký tự (header/footer/rác)")
-    parser.add_argument("--pattern", default="*.pdf", help="Pattern tên file cần quét (mặc định *.pdf)")
-    args = parser.parse_args()
-    
     base_dir = os.path.dirname(os.path.abspath(__file__))
     tok_path = os.path.join(base_dir, "app", "memlm", "custom_tokenizer")
     print(f"Testing tokenizer: {tok_path}\n")
@@ -299,9 +300,9 @@ if __name__ == "__main__":
     print()
 
     build_pdf_dataset_to_parquet(
-        input_dir=args.input_dir,
-        output_path=args.output,
+        input_dir=r"data\books",
+        output_path=r"data\trading_book.parquet",
         tokenizer=tok,
-        min_paragraph_len=args.min_paragraph_len,
-        pattern=args.pattern,
+        min_paragraph_len=80,
+        pattern="*.pdf",
     )

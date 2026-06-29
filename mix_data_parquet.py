@@ -19,10 +19,11 @@ PART_FLUSH_TOKENS = 50_000_000    # gom nhiều đợt interleave lại, đủ n
 
 CATEGORY_CONFIG = {
     "vi": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/vi/*.parquet")), "ratio": 0.1}, # 63GB
-    "wiki_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/wiki_en/*.parquet")), "ratio": 0.25}, # 6.7GB
-    "python": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/python/*.parquet")), "ratio": 0.35}, # 4GB
+    "wiki_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/wiki_en/*.parquet")), "ratio": 0.2}, # 6.7GB
+    "python": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/python/*.parquet")), "ratio": 0.3}, # 4GB
     "math": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/math/*.parquet")), "ratio": 0.15}, # 2.8GB
-    "social_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/social_en/*.parquet")), "ratio": 0.15}, # 200GB
+    "social_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/social_en/*.parquet")), "ratio": 0.1}, # 200GB
+    "trading": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/trading/*.parquet")), "ratio": 0.15}, # 1.5GB
 }
 assert abs(sum(c["ratio"] for c in CATEGORY_CONFIG.values()) - 1.0) < 1e-6
 

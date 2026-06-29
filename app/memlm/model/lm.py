@@ -1,13 +1,5 @@
 """
-model/lm.py — MemoryLM (LLaMA-style, không có Context Memory)
-===============================================================
-Kỹ thuật cốt lõi:
-    - RMSNorm + Pre-Norm  : bên trong SelfAttentionRoPE và trước FFN
-    - SwiGLU              : trong mỗi TransformerBlock
-    - No bias             : toàn bộ Linear đều bias=False
-    - RoPE                : áp lên Q/K trong self-attention, không có pos_emb tuyệt đối
-    - Scaled init         : 1/sqrt(2*n_layers) cho projection trên đường residual
-    - Weight tying        : lm_head.weight = token_emb.weight
+model/lm.py — MemoryLM (LLaMA-style tích hợp MoD Cách 1)
 """
 
 import torch
@@ -27,10 +19,9 @@ class MemoryLM(nn.Module):
         max_seq    : int   = 512,
         dropout    : float = 0.1,
         rope_base  : float = 10000.0,
-        # ── MoD config ───────────────────────────────────────────────────
         use_mod       : bool  = False,
-        mod_capacity  : float = 0.5,    # 50% token qua block, paper default
-        mod_interleave: bool  = True,   # layer chẵn bình thường, lẻ có MoD
+        mod_capacity  : float = 0.5,    
+        mod_interleave: bool  = True,   
     ):
         super().__init__()
         self.d_model  = d_model
@@ -45,7 +36,7 @@ class MemoryLM(nn.Module):
             TransformerBlock(
                 d_model, n_heads, dropout,
                 n_layers      = n_layers,
-                layer_idx     = i,              # ← mới
+                layer_idx     = i,              
                 use_mod       = use_mod,
                 mod_capacity  = mod_capacity,
                 mod_interleave= mod_interleave,
@@ -72,21 +63,16 @@ class MemoryLM(nn.Module):
         self,
         input_ids      : torch.Tensor,
         attn_mask      : torch.Tensor = None,
-        return_aux_loss: bool         = False,   # True khi train với MoD
+        return_aux_loss: bool         = False,   
     ):
-        """
-        input_ids : (B, T)
-        Returns   : logits (B, T, vocab_size)
-        """
         B, T   = input_ids.shape
         device = input_ids.device
 
         x         = self.drop(self.token_emb(input_ids))
         freqs_cis = self.freqs_cis.to(device)
 
-        # Cộng dồn aux_loss qua các MoD layer
         total_aux_loss = torch.tensor(0.0, device=device)
-        n_mod_layers   = 0   # đếm số layer thực sự có MoD để normalize
+        n_mod_layers   = 0   
         
         for block in self.blocks:
             if self.use_mod and return_aux_loss:
@@ -98,14 +84,15 @@ class MemoryLM(nn.Module):
                     total_aux_loss = total_aux_loss + aux_loss
                     n_mod_layers  += 1
             else:
-                x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
+                x = block(
+                    x, freqs_cis=freqs_cis, attn_mask=attn_mask,
+                    return_aux_loss=False
+                )
 
         x      = self.norm_out(x)
         logits = self.lm_head(x)
  
         if return_aux_loss and self.use_mod:
-            # Normalize theo số MoD layer thực sự active
-            # → aux_loss scale không đổi khi tăng n_layers
             norm_aux = total_aux_loss / max(n_mod_layers, 1)
             return logits, norm_aux
  

@@ -98,7 +98,7 @@ if __name__ == "__main__":
         output_path = base_ds_output_path,
     )
     print(f"Đã tạo thành công {base_ds_output_path}")
-    '''
+    
     # gen action data
     action_output_path = r"data\XAUUSD_1Min_ACTION_DS.parquet"
     gen_action_data(
@@ -107,7 +107,7 @@ if __name__ == "__main__":
         output_path = action_output_path,
     )
     print(f"Đã tạo thành công {action_output_path}")
-    
+    '''
     # Nhánh 3
     book = BookPipeline(tokenizer, min_paragraph_len=500)
     book.build(input_dir="data/books", output_path="data/books.parquet")
