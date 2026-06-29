@@ -190,7 +190,7 @@ def generate_records_from_pdf(
 
             token_length = 0
             if tokenizer:
-                token_length = len(tokenizer.tokenize(paragraph))
+                token_length = len(tokenizer.encode(paragraph))
 
             meta = {
                 "page_number":     page_number,
