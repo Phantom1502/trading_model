@@ -27,17 +27,19 @@ class MemoryLM(nn.Module):
         max_seq    : int   = 512,
         dropout    : float = 0.1,
         rope_base  : float = 10000.0,
+        use_router: bool = False,
     ):
         super().__init__()
         self.d_model  = d_model
         self.n_layers = n_layers
         self.max_seq  = max_seq
+        self.use_router = use_router
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
         self.drop      = nn.Dropout(dropout)
 
         self.blocks = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, dropout, n_layers=n_layers)
+            TransformerBlock(d_model, n_heads, dropout, n_layers=n_layers, use_router=use_router)
             for _ in range(n_layers)
         ])
 
@@ -56,7 +58,11 @@ class MemoryLM(nn.Module):
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
 
-    def forward(self, input_ids: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, input_ids: torch.Tensor, 
+        attn_mask: torch.Tensor = None, 
+        return_aux_loss: bool         = False,   # True khi train với Router
+    ) -> torch.Tensor:
         """
         input_ids : (B, T)
         Returns   : logits (B, T, vocab_size)
@@ -67,9 +73,19 @@ class MemoryLM(nn.Module):
         x         = self.drop(self.token_emb(input_ids))
         freqs_cis = self.freqs_cis.to(device)
 
+        total_aux_loss = torch.tensor(0.0, device=device)
+        n_mod_layers   = 0   # đếm số layer thực sự có MoD để normalize
+        
         for block in self.blocks:
-            x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
-
+            x, aux_loss = block(
+                x, freqs_cis=freqs_cis, attn_mask=attn_mask,
+                return_aux_loss=True,
+            )
+            total_aux_loss = total_aux_loss + aux_loss
+            n_mod_layers  += 1
+            
+        if return_aux_loss:
+            return self.lm_head(self.norm_out(x)), total_aux_loss / max(n_mod_layers, 1)
         return self.lm_head(self.norm_out(x))
 
 
