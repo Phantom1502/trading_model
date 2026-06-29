@@ -173,6 +173,8 @@ def get_110m_config() -> Config:
     cfg.data.chunk_size  = 20_000
     cfg.data.seg_len     = 512
     
+    cfg.model.mod_aux_loss_coef = 0.001
+    
     cfg.train.lr                    = 3e-4
     cfg.train.warmup_steps          = 500
     cfg.train.lr_decay_cycle_steps  = 100_000  
