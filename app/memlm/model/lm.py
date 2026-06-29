@@ -27,18 +27,30 @@ class MemoryLM(nn.Module):
         max_seq    : int   = 512,
         dropout    : float = 0.1,
         rope_base  : float = 10000.0,
+        # ── MoD config ───────────────────────────────────────────────────
+        use_mod       : bool  = False,
+        mod_capacity  : float = 0.5,    # 50% token qua block, paper default
+        mod_interleave: bool  = True,   # layer chẵn bình thường, lẻ có MoD
     ):
         super().__init__()
         self.d_model  = d_model
         self.n_layers = n_layers
         self.max_seq  = max_seq
+        self.use_mod  = use_mod
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
         self.drop      = nn.Dropout(dropout)
 
         self.blocks = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, dropout, n_layers=n_layers)
-            for _ in range(n_layers)
+            TransformerBlock(
+                d_model, n_heads, dropout,
+                n_layers      = n_layers,
+                layer_idx     = i,              # ← mới
+                use_mod       = use_mod,
+                mod_capacity  = mod_capacity,
+                mod_interleave= mod_interleave,
+            )
+            for i in range(n_layers)
         ])
 
         self.norm_out = RMSNorm(d_model)
@@ -55,8 +67,13 @@ class MemoryLM(nn.Module):
         if trainable_only:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
-
-    def forward(self, input_ids: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
+    
+    def forward(
+        self,
+        input_ids      : torch.Tensor,
+        attn_mask      : torch.Tensor = None,
+        return_aux_loss: bool         = False,   # True khi train với MoD
+    ):
         """
         input_ids : (B, T)
         Returns   : logits (B, T, vocab_size)
@@ -67,10 +84,32 @@ class MemoryLM(nn.Module):
         x         = self.drop(self.token_emb(input_ids))
         freqs_cis = self.freqs_cis.to(device)
 
+        # Cộng dồn aux_loss qua các MoD layer
+        total_aux_loss = torch.tensor(0.0, device=device)
+        n_mod_layers   = 0   # đếm số layer thực sự có MoD để normalize
+        
         for block in self.blocks:
-            x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
+            if self.use_mod and return_aux_loss:
+                x, aux_loss = block(
+                    x, freqs_cis=freqs_cis, attn_mask=attn_mask,
+                    return_aux_loss=True,
+                )
+                if block.mod_active:
+                    total_aux_loss = total_aux_loss + aux_loss
+                    n_mod_layers  += 1
+            else:
+                x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
 
-        return self.lm_head(self.norm_out(x))
+        x      = self.norm_out(x)
+        logits = self.lm_head(x)
+ 
+        if return_aux_loss and self.use_mod:
+            # Normalize theo số MoD layer thực sự active
+            # → aux_loss scale không đổi khi tăng n_layers
+            norm_aux = total_aux_loss / max(n_mod_layers, 1)
+            return logits, norm_aux
+ 
+        return logits
 
 
 def causal_mask(T: int, device: torch.device) -> torch.Tensor:
@@ -82,11 +121,14 @@ def causal_mask(T: int, device: torch.device) -> torch.Tensor:
 def build_model(cfg) -> MemoryLM:
     """Entry point xây model từ ModelConfig."""
     return MemoryLM(
-        vocab_size = cfg.model.vocab_size,
-        d_model    = cfg.model.d_model,
-        n_heads    = cfg.model.n_heads,
-        n_layers   = cfg.model.n_layers,
-        max_seq    = cfg.model.max_seq,
-        dropout    = cfg.model.dropout,
-        rope_base  = getattr(cfg.model, "rope_base", 10000.0),
+        vocab_size    = cfg.model.vocab_size,
+        d_model       = cfg.model.d_model,
+        n_heads       = cfg.model.n_heads,
+        n_layers      = cfg.model.n_layers,
+        max_seq       = cfg.model.max_seq,
+        dropout       = cfg.model.dropout,
+        rope_base     = getattr(cfg.model, "rope_base",      10000.0),
+        use_mod       = getattr(cfg.model, "use_mod",        False),
+        mod_capacity  = getattr(cfg.model, "mod_capacity",   0.5),
+        mod_interleave= getattr(cfg.model, "mod_interleave", True),
     )

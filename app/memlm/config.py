@@ -44,7 +44,10 @@ class ModelConfig:
     max_seq    : int   = 512
     dropout    : float = 0.1
     rope_base  : float = 10000.0
-
+    use_mod           : bool  = False
+    mod_capacity      : float = 0.5     # k = int(0.5 * T), paper default
+    mod_aux_loss_coef : float = 0.001   # weight cho auxiliary router loss
+    mod_interleave    : bool  = True    # xen kẽ MoD/normal theo layer index
 
 @dataclass
 class DataConfig:
@@ -168,10 +171,10 @@ def get_110m_config() -> Config:
     cfg.model.d_model  = 512
     cfg.model.n_heads  = 8
     cfg.model.n_layers = 30
-    cfg.model.max_seq  = 2048
+    cfg.model.max_seq  = 1024
 
     cfg.data.chunk_size  = 20_000
-    cfg.data.seg_len     = 2048
+    cfg.data.seg_len     = 1024
     
     cfg.train.lr                    = 3e-4
     cfg.train.warmup_steps          = 500
@@ -180,4 +183,31 @@ def get_110m_config() -> Config:
     cfg.train.batch_size  = 8
     cfg.train.grad_accum  = 64
     cfg.train.total_chunks          = -1
+    return cfg
+
+def get_mod_config() -> Config:
+    """MoD experiment — 30 layer, effective compute ~15 layer."""
+    cfg = Config()
+    cfg.model.d_model  = 512
+    cfg.model.n_heads  = 8
+    cfg.model.n_layers = 30
+    cfg.model.max_seq  = 512
+    
+    ''' ---- MOD ---- '''
+    cfg.model.use_mod          = True
+    cfg.model.mod_capacity     = 0.5
+    cfg.model.mod_aux_loss_coef = 0.001
+    cfg.model.mod_interleave   = True
+    
+    cfg.data.chunk_size  = 20_000
+    cfg.data.seg_len     = 512
+    
+    cfg.train.lr                    = 3e-4
+    cfg.train.warmup_steps          = 500
+    cfg.train.lr_decay_cycle_steps  = 100_000  
+    cfg.train.lr_min_ratio          = 0.1
+    cfg.train.batch_size  = 8
+    cfg.train.grad_accum  = 64
+    cfg.train.total_chunks          = -1
+    cfg.train.save_dir         = "./checkpoints_mod"
     return cfg
