@@ -80,14 +80,8 @@ class BaseTrainer:
         mask   = causal_mask(T, self.device)
 
         with torch.amp.autocast("cuda", enabled=(self.device.type == "cuda" and self.cfg.train.mixed_precision)):
-            if getattr(self.cfg.model, 'use_mod', False):
-                logits, aux_loss = self.model(ids, attn_mask=mask, return_aux_loss=True)
-                lm_loss = self.compute_loss(logits, labels)
-                coef    = getattr(self.cfg.model, 'mod_aux_loss_coef', 0.001)
-                loss    = lm_loss + coef * aux_loss
-            else:
-                logits = self.model(ids, attn_mask=mask)
-                loss   = self.compute_loss(logits, labels)
+            logits = self.model(ids, attn_mask=mask)
+            loss   = self.compute_loss(logits, labels)
 
         self.scaler.scale(loss / self.cfg.train.grad_accum).backward()
 
