@@ -190,7 +190,7 @@ def get_mod_config() -> Config:
     cfg = Config()
     cfg.model.d_model  = 512
     cfg.model.n_heads  = 8
-    cfg.model.n_layers = 30
+    cfg.model.n_layers = 20
     cfg.model.max_seq  = 1024
     
     ''' ---- MOD ---- '''
