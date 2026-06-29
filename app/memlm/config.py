@@ -191,7 +191,7 @@ def get_mod_config() -> Config:
     cfg.model.d_model  = 512
     cfg.model.n_heads  = 8
     cfg.model.n_layers = 30
-    cfg.model.max_seq  = 2048
+    cfg.model.max_seq  = 1024
     
     ''' ---- MOD ---- '''
     cfg.model.use_mod          = True
@@ -200,7 +200,7 @@ def get_mod_config() -> Config:
     cfg.model.mod_interleave   = True
     
     cfg.data.chunk_size  = 20_000
-    cfg.data.seg_len     = 2048
+    cfg.data.seg_len     = 1024
     
     cfg.train.lr                    = 3e-4
     cfg.train.warmup_steps          = 500
