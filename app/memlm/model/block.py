@@ -1,15 +1,34 @@
 """
-model/block.py — Transformer Block (LLaMA-style) with MoE-style Depth Routing
-===============================================================================
-Luồng tổng quát:
-    x → [Layer 0: bắt buộc chạy] → [Layer giữa: top-1 chọn Skip hoặc Run] → [Layer cuối: bắt buộc chạy]
+model/block.py — TransformerBlock với Skip/Run routing + DeepSeek bias correction
+===================================================================================
+NHÁNH THỬ NGHIỆM
 
-Với các layer giữa (use_router=True):
-    - Có 2 "expert": Expert 0 = Identity (skip), Expert 1 = TransformerBlock thật sự
-    - Router cho ra 2 logits → top-1 chọn 1 trong 2
-    - Bias correction: track tần suất mỗi lựa chọn → trừ điểm lựa chọn bị dùng quá nhiều
-    - Train : soft blend  →  out = w_skip * x  +  w_run * block_out   (differentiable)
-    - Infer : hard route  →  chạy đúng nhánh được chọn, nhánh kia bỏ qua hoàn toàn
+Ý tưởng:
+    Mỗi token tại mỗi layer được router quyết định:
+        Expert 0 = Identity (skip) — x đi thẳng, không tốn compute
+        Expert 1 = Run            — x đi qua full TransformerBlock
+
+    Layer đầu (idx=0) và layer cuối (idx=n_layers-1): luôn Run, không có router.
+    Các layer giữa: có router, top-1 chọn Skip hoặc Run.
+
+Cân bằng tải — DeepSeek bias correction (thay cho aux/balance loss):
+    Router cho ra 2 logit [logit_skip, logit_run].
+    Trước khi argmax, cộng thêm bias:
+        bias_i = -gamma * (count_i / total_count)
+    Expert nào được chọn nhiều → count cao → bias âm lớn → bị trừ điểm.
+    Tự động cân bằng mà không cần thêm loss term vào objective.
+
+    Ưu điểm so với balance loss:
+        - Không cần tune thêm loss coefficient
+        - Không can thiệp vào gradient của lm_loss
+        - Đơn giản, ổn định hơn khi train
+
+Config thêm vào ModelConfig (config.py):
+    use_router  : bool  = False  # bật/tắt routing cho layer giữa
+    router_gamma: float = 0.5    # DeepSeek bias correction strength
+                                  # tune trong [0.1, 1.0]
+                                  # cao → cân bằng mạnh hơn
+                                  # thấp → router tự do hơn
 """
 
 import math
@@ -20,215 +39,202 @@ from .attention import SelfAttentionRoPE
 from .layers import RMSNorm, SwiGLU
 
 
-# ---------------------------------------------------------------------------
-# DepthRouter — chọn Skip hay Run cho từng token
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════
+# DepthRouter — Skip hay Run, cân bằng theo DeepSeek
+# ══════════════════════════════════════════════════════════════════════
 
 class DepthRouter(nn.Module):
     """
-    Cho mỗi token, tạo ra 2 logits tương ứng với:
-        logit[0] → Expert 0: Skip (identity, x đi thẳng)
-        logit[1] → Expert 1: Run  (chạy full transformer block)
+    Router 2 expert: Skip (0) vs Run (1).
 
-    Có bias correction để cân bằng tải giữa skip và run.
-
-    Buffers (không phải parameter, không train được):
-        route_counts : [2,]  — tổng số lần mỗi nhánh được chọn (cộng dồn qua các batch)
+    Cơ chế cân bằng DeepSeek:
+        - Buffer `expert_counts[2]` đếm số lần mỗi expert được chọn
+        - bias = -gamma * (count / total) cộng vào logits trước argmax
+        - Expert bị chọn quá nhiều → bias âm lớn → tự động nhường chỗ
+        - Không cần loss term, không cần tune coefficient riêng
     """
 
-    NUM_EXPERTS = 2   # 0 = skip, 1 = run
-    IDX_SKIP    = 0
-    IDX_RUN     = 1
+    IDX_SKIP = 0
+    IDX_RUN  = 1
 
     def __init__(self, d_model: int, gamma: float = 0.5):
-        """
-        Args:
-            d_model : chiều hidden của model
-            gamma   : hệ số phạt bias correction (càng cao → cân bằng càng mạnh)
-        """
         super().__init__()
-
         self.gamma = gamma
 
-        self.proj = nn.Linear(d_model, self.NUM_EXPERTS, bias=False)
+        # Linear nhỏ: d_model → 2 logit (skip vs run)
+        self.proj = nn.Linear(d_model, 2, bias=False)
         nn.init.normal_(self.proj.weight, std=0.02)
 
-        # Đếm tần suất từng nhánh được chọn — giống expert_counts trong MoE
-        self.register_buffer(
-            "route_counts",
-            torch.zeros(self.NUM_EXPERTS)
-        )
+        # Đếm tần suất chọn — buffer, không train được
+        self.register_buffer("expert_counts", torch.zeros(2))
 
-    # ------------------------------------------------------------------
     def _bias(self) -> torch.Tensor:
         """
-        Tính bias correction theo công thức giống DeepSeek:
-            bias = -gamma * (count_i / total_count)
-
-        Nhánh nào bị chọn nhiều hơn → bị trừ điểm nhiều hơn
-        → router tự động trao cơ hội cho nhánh còn lại.
+        DeepSeek bias correction:
+            bias_i = -gamma * (count_i / total_count)
+        Expert nhiều → count cao → bias âm → bị trừ điểm → tự cân bằng.
         """
-        total = self.route_counts.sum() + 1e-5
-        load_ratio = self.route_counts / total          # [2,]
-        return -self.gamma * load_ratio                 # [2,]
+        total = self.expert_counts.sum() + 1e-5
+        return -self.gamma * (self.expert_counts / total)   # [2]
 
-    # ------------------------------------------------------------------
-    def forward(
-        self,
-        x: torch.Tensor,                               # (B, T, d_model)
-        training: bool = True,
-    ):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Returns:
-            weights  : (B, T, 2)  — softmax weights cho 2 nhánh (dùng khi train)
-            chosen   : (B, T)     — index nhánh được chọn  (0=skip, 1=run)
+        x : (B, T, D)
+        Returns: chosen (B, T) — 0=skip, 1=run
         """
         B, T, _ = x.shape
 
-        logits = self.proj(x)                          # (B, T, 2)
+        logits = self.proj(x)                              # (B, T, 2)
 
-        # Áp bias correction vào logits trước khi chọn
-        if training:
-            bias = self._bias()                        # [2,]
+        if self.training:
+            # Cộng bias correction vào logits trước khi chọn
+            bias   = self._bias()                          # [2]
             logits = logits + bias.unsqueeze(0).unsqueeze(0)
 
-        # Top-1: chọn nhánh có logit cao nhất cho từng token
-        chosen = logits.argmax(dim=-1)                 # (B, T)
+        # Top-1: chọn expert có logit cao nhất
+        chosen = logits.argmax(dim=-1)                     # (B, T)
 
-        # Cập nhật route_counts (no_grad vì đây chỉ là thống kê)
-        if training:
+        # Cập nhật counts — no_grad, chỉ là thống kê
+        if self.training:
             with torch.no_grad():
-                flat_chosen = chosen.view(-1)          # (B*T,)
-                for idx in flat_chosen:
-                    self.route_counts[idx] += 1
+                for idx in chosen.view(-1):
+                    self.expert_counts[idx] += 1
 
         return chosen
 
+    def reset_counts(self):
+        """Reset counts mỗi chunk để bias không bị stale."""
+        self.expert_counts.zero_()
 
-# ---------------------------------------------------------------------------
+    @property
+    def skip_ratio(self) -> float:
+        """Tỉ lệ token skip từ đầu epoch — dùng để monitor."""
+        total = self.expert_counts.sum().item()
+        if total == 0:
+            return 0.0
+        return self.expert_counts[self.IDX_SKIP].item() / total
+
+
+# ══════════════════════════════════════════════════════════════════════
 # TransformerBlock
-# ---------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════
 
 class TransformerBlock(nn.Module):
     """
-    use_router=False  →  layer đầu / cuối, luôn chạy full block.
-    use_router=True   →  layer giữa, top-1 routing giữa Skip và Run.
+    LLaMA-style block với tùy chọn Skip/Run routing.
+
+    use_router=False (layer đầu & cuối):
+        Luôn chạy full block — không có router, không có skip.
+
+    use_router=True (layer giữa):
+        Router chọn Skip hoặc Run cho từng token.
+        Train: chạy full block, sau đó select theo chosen mask.
+        Infer: giống train — chạy full block, select theo mask.
+        (Không cần soft gate — bias correction đã đảm bảo cân bằng)
     """
 
     def __init__(
         self,
-        d_model: int,
-        n_heads: int,
-        dropout: float = 0.1,
-        n_layers: int = 8,
-        use_router: bool = False,
-        # chỉ dùng khi use_router=True
-        gamma: float = 0.5,
-        inference_threshold: float = 0.5,
+        d_model    : int,
+        n_heads    : int,
+        dropout    : float = 0.1,
+        n_layers   : int   = 8,
+        layer_idx  : int   = 0,
+        # ── Routing config ───────────────────────────────────────────
+        use_router  : bool  = False,
+        router_gamma: float = 0.5,
     ):
-        """
-        Args:
-            d_model             : chiều hidden
-            n_heads             : số attention head
-            dropout             : dropout rate
-            n_layers            : tổng số layer (dùng để scale init)
-            use_router          : False → layer cố định; True → layer có routing
-            gamma               : hệ số bias correction (chỉ dùng khi use_router=True)
-            inference_threshold : ngưỡng để chạy block khi inference
-                                  (nếu weight_run >= threshold → chạy block)
-        """
         super().__init__()
+        self.layer_idx  = layer_idx
+        self.use_router = use_router
 
+        # ── Attention + FFN — giống block gốc hoàn toàn ──────────────
         self.self_attn = SelfAttentionRoPE(d_model, n_heads, dropout=dropout)
         self.norm2     = RMSNorm(d_model)
         self.ffn       = SwiGLU(d_model, bias=False)
 
-        self.use_router          = use_router
-        self.inference_threshold = inference_threshold
-
+        # ── Router — chỉ tạo cho layer giữa ──────────────────────────
         if use_router:
-            self.router = DepthRouter(d_model, gamma=gamma)
+            self.router = DepthRouter(d_model, gamma=router_gamma)
 
         self._scaled_init(n_layers)
 
-    # ------------------------------------------------------------------
     def _scaled_init(self, n_layers: int):
         scale = 1.0 / math.sqrt(2 * n_layers)
         nn.init.normal_(self.self_attn.Wo.weight, std=0.02 * scale)
         nn.init.normal_(self.ffn.w2.weight,       std=0.02 * scale)
 
-    # ------------------------------------------------------------------
     def _run_block(self, x, freqs_cis, attn_mask=None):
-        """Full transformer block: Attention + FFN."""
-        x = x + self.self_attn(x, freqs_cis, attn_mask=attn_mask)
-        x = x + self.ffn(self.norm2(x))
-        return x
+        """Full block: Attention + FFN."""
+        attn_out = self.self_attn(x, freqs_cis, attn_mask=attn_mask)
+        x_post   = x + attn_out
+        return x_post + self.ffn(self.norm2(x_post))
 
-    # ------------------------------------------------------------------
     def forward(
         self,
-        x,
-        freqs_cis,
-        attn_mask=None,
-    ):
-        """
-        Args:
-            x               : (B, T, d_model)
-            freqs_cis       : RoPE frequencies
-            attn_mask       : attention mask (optional)
+        x        : torch.Tensor,   # (B, T, D)
+        freqs_cis: torch.Tensor,
+        attn_mask: torch.Tensor = None,
+    ) -> torch.Tensor:
 
-        Returns:
-            out             : (B, T, d_model)
-            aux_loss        : scalar 0 (chỉ trả khi return_aux_loss=True)
-        """
-
-        # ==============================================================
-        # LAYER CỐ ĐỊNH (layer đầu & cuối): luôn chạy full block
-        # ==============================================================
+        # ── Layer đầu & cuối: luôn chạy full block ───────────────────
         if not self.use_router:
-            out = self._run_block(x, freqs_cis, attn_mask)
-            return out
+            return self._run_block(x, freqs_cis, attn_mask)
 
-        # ==============================================================
-        # LAYER CÓ ROUTING
-        # ==============================================================
+        # ── Layer giữa: router quyết định skip hay run ────────────────
+        chosen   = self.router(x)                          # (B, T)
+        run_mask = (chosen == DepthRouter.IDX_RUN)         # (B, T) bool
 
-        # Router trả về:
-        #   weights : (B, T, 2)  — softmax([logit_skip, logit_run])
-        #   chosen  : (B, T)     — 0=skip, 1=run
-        chosen = self.router(x, training=self.training)
+        # Tất cả skip → trả nguyên x, tiết kiệm toàn bộ compute
+        if not run_mask.any():
+            return x
 
-        # ----------------------------------------------------------
-        # TRAIN & INFERENCE — Hard routing (giống nhau hoàn toàn)
-        # ----------------------------------------------------------
-        #
-        # chosen=0 → skip: out = x          (không tốn compute)
-        # chosen=1 → run : out = block_out  (chạy full block)
-        #
-        # Bias correction trong router tự ép cân bằng khi một nhánh
-        # bị chọn quá nhiều — không cần soft blend, không cần aux_loss.
-        #
-        out = x.clone()                               # mặc định: skip
+        # Tất cả run → chạy full block, không cần masking
+        if run_mask.all():
+            return self._run_block(x, freqs_cis, attn_mask)
 
-        run_mask = (chosen == DepthRouter.IDX_RUN)   # (B, T) bool
+        # Mixed: chạy full block, sau đó select theo mask
+        # Không thể pack token vì attention cần (B, T, D) liên tục
+        # để RoPE và causal mask đúng vị trí
+        block_out = self._run_block(x, freqs_cis, attn_mask)   # (B, T, D)
 
-        if run_mask.any():
-            x_packed = x[run_mask]                   # (N_run, d_model)
+        # Token được chọn Run → block_out, token Skip → x gốc
+        mask = run_mask.unsqueeze(-1).expand_as(x)         # (B, T, D)
+        return torch.where(mask, block_out, x)
 
-            # Xử lý RoPE frequencies cho đúng subset token
-            if freqs_cis.dim() >= 2:
-                freqs_cis_packed = freqs_cis[run_mask]
-            else:
-                freqs_cis_packed = freqs_cis
 
-            attn_mask_packed = None
-            if attn_mask is not None:
-                attn_mask_packed = attn_mask[run_mask]
+# ══════════════════════════════════════════════════════════════════════
+# Build helper — dùng trong lm.py
+# ══════════════════════════════════════════════════════════════════════
 
-            out[run_mask] = self._run_block(
-                x_packed,
-                freqs_cis_packed,
-                attn_mask_packed,
+def build_blocks(
+    n_layers    : int,
+    d_model     : int,
+    n_heads     : int,
+    dropout     : float = 0.1,
+    use_router  : bool  = False,
+    router_gamma: float = 0.5,
+) -> nn.ModuleList:
+    """
+    Tạo danh sách block theo quy tắc:
+        Layer 0            : luôn run (use_router=False)
+        Layer 1 ~ n-2      : có router (use_router=True) nếu use_router=True
+        Layer n_layers-1   : luôn run (use_router=False)
+
+    Đảm bảo layer đầu và cuối không bao giờ skip.
+    """
+    blocks = []
+    for i in range(n_layers):
+        is_fixed = (i == 0) or (i == n_layers - 1)
+        blocks.append(
+            TransformerBlock(
+                d_model     = d_model,
+                n_heads     = n_heads,
+                dropout     = dropout,
+                n_layers    = n_layers,
+                layer_idx   = i,
+                use_router  = use_router and not is_fixed,
+                router_gamma= router_gamma,
             )
-
-        return out
+        )
+    return nn.ModuleList(blocks)

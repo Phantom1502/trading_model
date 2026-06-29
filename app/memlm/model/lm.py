@@ -13,9 +13,8 @@ Kỹ thuật cốt lõi:
 import torch
 import torch.nn as nn
 
-from .block import TransformerBlock
+from .block import TransformerBlock, build_blocks
 from .layers import RMSNorm, precompute_freqs_cis
-
 
 class MemoryLM(nn.Module):
     def __init__(
@@ -27,7 +26,8 @@ class MemoryLM(nn.Module):
         max_seq    : int   = 512,
         dropout    : float = 0.1,
         rope_base  : float = 10000.0,
-        use_router: bool = False,
+        use_router   : bool  = False,
+        router_gamma : float = 0.5,
     ):
         super().__init__()
         self.d_model  = d_model
@@ -38,10 +38,14 @@ class MemoryLM(nn.Module):
         self.token_emb = nn.Embedding(vocab_size, d_model)
         self.drop      = nn.Dropout(dropout)
 
-        self.blocks = nn.ModuleList([
-            TransformerBlock(d_model, n_heads, dropout, n_layers=n_layers, use_router=use_router)
-            for _ in range(n_layers)
-        ])
+        self.blocks = build_blocks(
+            n_layers     = n_layers,
+            d_model      = d_model,
+            n_heads      = n_heads,
+            dropout      = dropout,
+            use_router   = use_router,
+            router_gamma = router_gamma,
+        )
 
         self.norm_out = RMSNorm(d_model)
         self.lm_head  = nn.Linear(d_model, vocab_size, bias=False)
@@ -94,4 +98,6 @@ def build_model(cfg) -> MemoryLM:
         max_seq    = cfg.model.max_seq,
         dropout    = cfg.model.dropout,
         rope_base  = getattr(cfg.model, "rope_base", 10000.0),
+        use_router   = getattr(cfg.model, 'use_router',   False),
+        router_gamma = getattr(cfg.model, 'router_gamma', 0.5),
     )

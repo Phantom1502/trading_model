@@ -80,10 +80,8 @@ class BaseTrainer:
         mask   = causal_mask(T, self.device)
 
         with torch.amp.autocast("cuda", enabled=(self.device.type == "cuda" and self.cfg.train.mixed_precision)):
-            logits, aux_loss = self.model(ids, attn_mask=mask, return_aux_loss=True)
-            lm_loss = self.compute_loss(logits, labels)
-            coef    = getattr(self.cfg.model, 'mod_aux_loss_coef', 0.001)
-            loss    = lm_loss + coef * aux_loss
+            logits = self.model(ids, attn_mask=mask)
+            loss   = self.compute_loss(logits, labels)
 
         self.scaler.scale(loss / self.cfg.train.grad_accum).backward()
 
@@ -121,6 +119,12 @@ class BaseTrainer:
         self.model.train()
         self.chunk_idx = chunk_idx
 
+        # Reset expert counts mỗi chunk
+        if getattr(self.cfg.model, 'use_router', False):
+            for block in self.model.blocks:
+                if hasattr(block, 'router'):
+                    block.router.reset_counts()
+                    
         for epoch in range(self.cfg.train.epochs_per_chunk):
             for accum_step, batch in enumerate(train_loader):
                 loss = self.train_one_batch(batch, accum_step)
@@ -129,7 +133,16 @@ class BaseTrainer:
                 if self.logger.should_log():
                     lr = self.scheduler.get_last_lr()[0]
                     self.logger.flush(step=self.global_step, lr=lr)
-
+                    
+                    # Log skip ratio để monitor cân bằng
+                    if getattr(self.cfg.model, 'use_router', False):
+                        ratios = [
+                            f"{block.router.skip_ratio:.2f}"
+                            for block in self.model.blocks
+                            if hasattr(block, 'router')
+                        ]
+                        print(f"  skip_ratio per layer: [{', '.join(ratios)}]")
+                        
                 if self.global_step > 0 and self.global_step % self.cfg.train.eval_every == 0:
                     val_loss = self.evaluate(val_loader)
                     log_eval(val_loss, step=self.global_step)

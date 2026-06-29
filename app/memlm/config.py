@@ -45,7 +45,10 @@ class ModelConfig:
     dropout    : float = 0.1
     rope_base  : float = 10000.0
 
-
+    # ── Skip/Run routing + DeepSeek bias correction ───────────────
+    use_router   : bool  = False  # False = mọi layer luôn run
+    router_gamma : float = 0.5    # DeepSeek bias strength [0.1, 1.0]
+    
 @dataclass
 class DataConfig:
     """Cấu hình dữ liệu và cách load incremental."""
@@ -173,7 +176,7 @@ def get_110m_config() -> Config:
     cfg.data.chunk_size  = 20_000
     cfg.data.seg_len     = 512
     
-    cfg.model.mod_aux_loss_coef = 0.001
+    cfg.model.use_router = True
     
     cfg.train.lr                    = 3e-4
     cfg.train.warmup_steps          = 500
