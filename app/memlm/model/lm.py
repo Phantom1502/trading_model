@@ -61,7 +61,6 @@ class MemoryLM(nn.Module):
     def forward(
         self, input_ids: torch.Tensor, 
         attn_mask: torch.Tensor = None, 
-        return_aux_loss: bool         = False,   # True khi train với Router
     ) -> torch.Tensor:
         """
         input_ids : (B, T)
@@ -72,20 +71,10 @@ class MemoryLM(nn.Module):
 
         x         = self.drop(self.token_emb(input_ids))
         freqs_cis = self.freqs_cis.to(device)
-
-        total_aux_loss = torch.tensor(0.0, device=device)
-        n_mod_layers   = 0   # đếm số layer thực sự có MoD để normalize
         
         for block in self.blocks:
-            x, aux_loss = block(
-                x, freqs_cis=freqs_cis, attn_mask=attn_mask,
-                return_aux_loss=True,
-            )
-            total_aux_loss = total_aux_loss + aux_loss
-            n_mod_layers  += 1
+            x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
             
-        if return_aux_loss:
-            return self.lm_head(self.norm_out(x)), total_aux_loss / max(n_mod_layers, 1)
         return self.lm_head(self.norm_out(x))
 
 

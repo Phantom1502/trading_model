@@ -170,16 +170,12 @@ class TransformerBlock(nn.Module):
         x,
         freqs_cis,
         attn_mask=None,
-        return_aux_loss=False,
     ):
         """
         Args:
             x               : (B, T, d_model)
             freqs_cis       : RoPE frequencies
             attn_mask       : attention mask (optional)
-            return_aux_loss : nếu True, trả thêm scalar aux_loss (luôn = 0 vì
-                              cân bằng tải đã được xử lý bởi bias correction,
-                              không cần loss phụ)
 
         Returns:
             out             : (B, T, d_model)
@@ -191,8 +187,6 @@ class TransformerBlock(nn.Module):
         # ==============================================================
         if not self.use_router:
             out = self._run_block(x, freqs_cis, attn_mask)
-            if return_aux_loss:
-                return out, x.new_zeros(())
             return out
 
         # ==============================================================
@@ -237,6 +231,4 @@ class TransformerBlock(nn.Module):
                 attn_mask_packed,
             )
 
-        if return_aux_loss:
-            return out, x.new_zeros(())
         return out
