@@ -171,6 +171,7 @@ def get_110m_config() -> Config:
     cfg.model.max_seq  = 2048
 
     cfg.data.chunk_size  = 20_000
+    cfg.data.seg_len     = 2048
     
     cfg.train.lr                    = 3e-4
     cfg.train.warmup_steps          = 500

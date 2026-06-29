@@ -62,6 +62,40 @@ class CandleParser:
             candles.append(Candle(open=float(o), high=float(h), low=float(l), close=float(c)))
         return candles
 
+    @classmethod
+    def from_candles(cls, candles: List[Candle], swing_window: int = 2) -> "CandleParser":
+        """
+        Tạo CandleParser trực tiếp từ 1 list Candle đã có sẵn (không parse lại text).
+        Dùng khi đã CẮT một đoạn con từ list candles của 1 parser lớn hơn — `raw_text`
+        sẽ được TỰ SINH LẠI đúng theo các Candle này, để header hiển thị trong dataset
+        khớp chính xác với nội dung đang được phân tích (tránh lệch giữa raw_text gốc
+        100 nến và nội dung thực tế chỉ còn 20-30 nến).
+        """
+        obj = cls.__new__(cls)
+        obj.swing_window = swing_window
+        obj.candles      = list(candles)
+        obj.raw_text      = obj._build_raw_text(candles)
+        return obj
+
+    @staticmethod
+    def _build_raw_text(candles: List[Candle]) -> str:
+        """Sinh lại chuỗi <chart> O_.. H_.. L_.. C_.. ... </chart> từ list Candle."""
+        tokens = [
+            f"O_{c.open:g} H_{c.high:g} L_{c.low:g} C_{c.close:g}"
+            for c in candles
+        ]
+        return "<chart> " + " ".join(tokens) + " </chart>"
+
+    def slice(self, start: int, end: int) -> "CandleParser":
+        """
+        Cắt một đoạn con [start, end) từ parser hiện tại, trả về CandleParser mới
+        độc lập (raw_text tự sinh lại đúng theo đoạn đã cắt).
+
+        Lưu ý: cắt SAU khi đã parse xong (trên List[Candle]), không cắt trên text thô —
+        tránh việc cắt giữa 1 token O_/H_/L_/C_ làm hỏng dữ liệu.
+        """
+        return CandleParser.from_candles(self.candles[start:end], swing_window=self.swing_window)
+
     def __len__(self): return len(self.candles)
     def __getitem__(self, idx): return self.candles[idx]
 

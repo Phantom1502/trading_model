@@ -36,7 +36,7 @@ class TokenChunkDataset(Dataset):
         n_skipped    = 0
 
         for doc in documents:
-            if len(doc) < (seg_len + 1) // 4:
+            if len(doc) < 128: # hard code 128 token
                 n_skipped += 1
                 continue
 
@@ -53,7 +53,7 @@ class TokenChunkDataset(Dataset):
             self.samples.extend(chunks)
 
         if n_skipped:
-            print(f"  [TokenChunkDataset] Bỏ qua {n_skipped} doc ngắn hơn {(seg_len+1)//2} token")
+            print(f"  [TokenChunkDataset] Bỏ qua {n_skipped} doc ngắn hơn 128 token")
 
     def __len__(self):
         return len(self.samples)
@@ -74,10 +74,10 @@ class SequentialDocumentDataset(Dataset):
         if stride is None:
             stride = seg_len
 
-        doc_list  = [d for d in documents if len(d) >= (seg_len + 1) // 4]
+        doc_list  = [d for d in documents if len(d) >= 128]
         n_skipped = len(documents) - len(doc_list)
         if n_skipped:
-            print(f"  [SequentialDocumentDataset] Bỏ qua {n_skipped} doc ngắn hơn {(seg_len+1)//2} token")
+            print(f"  [SequentialDocumentDataset] Bỏ qua {n_skipped} doc ngắn hơn 128 token")
 
         if shuffle_docs:
             random.shuffle(doc_list)

@@ -34,7 +34,7 @@ Cách dùng:
 
 import random
 from typing import List, Optional, Dict, Sequence
-from candle_parser import CandleParser, Candle
+from app.utils.chart.candle_parser import CandleParser, Candle
 
 
 class CurriculumGenerator:
@@ -571,6 +571,102 @@ def build_pretrain_dataset(
 
 
 # ══════════════════════════════════════════════════════════════════
+# BATCH BUILDER VỚI CẮT ĐOẠN CON RANDOM (slicing)
+# ══════════════════════════════════════════════════════════════════
+
+def build_pretrain_dataset_with_slicing(
+    raw_charts: List[str],
+    slices_per_chart: int = 4,        # số đoạn con random / mỗi chart 100 nến
+    min_slice_len: int = 20,
+    max_slice_len: int = 30,
+    swing_window: int = 2,
+    curriculum_mode: str = "random",  # "full" | "layers" | "random" — áp dụng lên MỖI đoạn con
+    min_layers: int = 2,
+    max_layers: Optional[int] = None,
+    allow_overlap: bool = True,
+    separator: str = "\n\n<|endofsample|>\n\n",
+    seed: Optional[int] = None,
+) -> str:
+    """
+    Từ mỗi chart DÀI (vd 100 nến), CẮT RA `slices_per_chart` đoạn con ngẫu nhiên
+    (mỗi đoạn dài 20-30 nến, random), sau đó áp dụng curriculum lên từng đoạn con.
+
+    Lý do cắt sau khi parse (không cắt trên text thô): tránh cắt giữa 1 token
+    O_/H_/L_/C_, và mỗi đoạn con cần raw_text riêng khớp đúng nội dung của nó
+    (CandleParser.slice() tự sinh lại raw_text chính xác).
+
+    Parameters
+    ----------
+    raw_charts        : list chuỗi chart thô, MỖI CHUỖI THƯỜNG DÀI (vd 100 nến)
+    slices_per_chart  : số đoạn con random cắt ra từ MỖI chart (vd 3-5)
+    min_slice_len, max_slice_len : độ dài mỗi đoạn con (số nến), random trong khoảng này
+    curriculum_mode   : cách sinh text cho MỖI đoạn con — "full"/"layers"/"random"
+                        (xem build_pretrain_dataset để biết ý nghĩa từng mode)
+    allow_overlap     : True  → các đoạn con của cùng 1 chart có thể trùng lặp vị trí
+                        False → cố gắng tránh trùng lặp hoàn toàn (best-effort,
+                                 không đảm bảo nếu chart quá ngắn so với số lượng yêu cầu)
+    seed              : seed cố định để tái lập dataset
+
+    Returns
+    -------
+    str — toàn bộ dataset, các sample nối bằng `separator`.
+    """
+    rng = random.Random(seed) if seed is not None else random
+    samples: List[str] = []
+
+    for raw in raw_charts:
+        base_parser = CandleParser(raw, swing_window=swing_window)
+        n = len(base_parser)
+
+        if n < min_slice_len:
+            # Chart quá ngắn để cắt theo yêu cầu — dùng nguyên cả chart làm 1 đoạn.
+            sub_parsers = [base_parser]
+        else:
+            sub_parsers = []
+            used_ranges: List[tuple] = []
+
+            for _ in range(slices_per_chart):
+                slice_len = rng.randint(min_slice_len, min(max_slice_len, n))
+                max_start = n - slice_len
+
+                start = rng.randint(0, max_start)
+                if not allow_overlap:
+                    # Best-effort: thử tối đa 10 lần để tìm vị trí không trùng lặp
+                    for _ in range(10):
+                        candidate_range = (start, start + slice_len)
+                        overlap = any(
+                            candidate_range[0] < r[1] and candidate_range[1] > r[0]
+                            for r in used_ranges
+                        )
+                        if not overlap:
+                            break
+                        start = rng.randint(0, max_start)
+                    used_ranges.append((start, start + slice_len))
+
+                end = start + slice_len
+                sub_parsers.append(base_parser.slice(start, end))
+
+        for sub in sub_parsers:
+            gen = CurriculumGenerator(sub)
+
+            if curriculum_mode == "full":
+                samples.append(gen.generate_full_curriculum())
+            elif curriculum_mode == "layers":
+                samples.extend(gen.generate_layers_separately())
+            elif curriculum_mode == "random":
+                samples.append(gen.generate_random_subset(
+                    min_layers=min_layers, max_layers=max_layers, rng=rng
+                ))
+            else:
+                raise ValueError(
+                    f"curriculum_mode không hợp lệ: {curriculum_mode}. "
+                    f"Dùng 'full', 'layers', hoặc 'random'."
+                )
+
+    return separator.join(s.strip() for s in samples) + "\n"
+
+
+# ══════════════════════════════════════════════════════════════════
 # DEMO / SELF-TEST
 # ══════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -596,3 +692,41 @@ if __name__ == "__main__":
     print("\n=== RANDOM SUBSET (kiểu 'range', liên tục) ===\n")
     rng2 = random.Random(42)
     print(gen.generate_random_subset(mode="range", rng=rng2))
+
+    # ──────────────────────────────────────────────
+    # DEMO: đọc parquet (mỗi dòng 100 nến) → cắt random 20-30 nến → sinh dataset
+    # ──────────────────────────────────────────────
+    print("\n\n=== DEMO: build_pretrain_dataset_with_slicing từ file Parquet ===\n")
+    try:
+        import pandas as pd
+
+        parquet_data_file = "data/chart_XAUUSD_dataset_1Min.parquet"
+        df = pd.read_parquet(parquet_data_file)
+
+        # Lấy toàn bộ cột 'text' (mỗi dòng là 1 chart dài, vd 100 nến)
+        raw_charts = df['text'].tolist()
+        print(f"Đọc được {len(raw_charts)} dòng chart từ parquet.")
+
+        dataset_text = build_pretrain_dataset_with_slicing(
+            raw_charts,
+            slices_per_chart=4,      # mỗi chart 100 nến -> 4 đoạn con random
+            min_slice_len=20,
+            max_slice_len=30,
+            curriculum_mode="random",  # mỗi đoạn con cũng random số tầng (2-7)
+            seed=42,
+        )
+
+        n_samples = dataset_text.count("<|endofsample|>") + 1
+        print(f"Tổng số sample sinh ra: {n_samples} "
+              f"(kỳ vọng ~ {len(raw_charts)} dòng x 4 đoạn = {len(raw_charts) * 4})")
+        print(f"Tổng độ dài dataset: {len(dataset_text)} ký tự")
+
+        # Lưu ra file để dùng cho continued pretraining
+        out_path = "data/curriculum_pretrain_dataset.txt"
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(dataset_text)
+        print(f"Đã lưu dataset → {out_path}")
+
+    except FileNotFoundError:
+        print("(Không tìm thấy file parquet mẫu — bỏ qua phần demo này. "
+              "Thay đường dẫn `parquet_data_file` bằng file thật của bạn để chạy.)")

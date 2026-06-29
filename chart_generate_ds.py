@@ -4,8 +4,8 @@ from app.utils.chart.chartdatasetbuilder import ChartDatasetBuilder
 
 import pandas as pd
 
-codec = ChartCodec(scale=M1_SCALE)        # set 1 lần
+codec = ChartCodec(scale=M5_SCALE)        # set 1 lần
 builder = ChartDatasetBuilder(codec, window_size=100, stride=10, atr_period=100)
 
 # Sinh dataset               # hoặc
-dataset = builder.build_from_file('data\\XAUUSD_1Min.csv', "data\\chart_XAUUSD_dataset_1Min.parquet")
+dataset = builder.build_from_file('data\\XAUUSD_5Min.csv', "data\\chart_XAUUSD_dataset_5Min.parquet")
