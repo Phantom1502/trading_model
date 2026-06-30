@@ -168,10 +168,10 @@ def get_110m_config() -> Config:
     cfg.model.d_model  = 512
     cfg.model.n_heads  = 8
     cfg.model.n_layers = 30
-    cfg.model.max_seq  = 2048
+    cfg.model.max_seq  = 512
 
     cfg.data.chunk_size  = 20_000
-    cfg.data.seg_len     = 2048
+    cfg.data.seg_len     = 512
     
     cfg.train.lr                    = 3e-4
     cfg.train.warmup_steps          = 500
