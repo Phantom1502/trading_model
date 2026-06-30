@@ -1,3 +1,8 @@
+# model/block.py
+# ============================================================
+# TransformerBlock + Sequence-level Dynamic Depth Routing
+# ============================================================
+
 import math
 import torch
 import torch.nn as nn
@@ -12,13 +17,14 @@ from .layers import RMSNorm, SwiGLU
 
 class SequenceRouter(nn.Module):
     """
-    Quyết định Skip / Run cho toàn bộ sequence.
+    Router nhìn toàn bộ (T, D) của sequence bằng một CNN nhỏ.
 
-    0 = Skip
-    1 = Run
+    x:
+        (B, T, D)
 
-    Router nhìn mean pooling của sequence:
-        pooled = mean(x, dim=1)
+    quyết định:
+        0 = Skip
+        1 = Run
 
     Cân bằng bằng DeepSeek bias correction:
         bias_i = -gamma * count_i / total
@@ -26,25 +32,51 @@ class SequenceRouter(nn.Module):
 
     IDX_SKIP = 0
     IDX_RUN = 1
-    
-    def __init__(self, d_model):
+
+    def __init__(
+        self,
+        d_model: int,
+        gamma: float = 0.5,
+    ):
         super().__init__()
 
+        self.gamma = gamma
+
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 8, 5, padding=2),
+            nn.Conv2d(
+                1,
+                8,
+                kernel_size=5,
+                padding=2,
+            ),
             nn.GELU(),
 
-            nn.Conv2d(8, 16, 5, padding=2),
+            nn.Conv2d(
+                8,
+                16,
+                kernel_size=5,
+                padding=2,
+            ),
             nn.GELU(),
 
-            nn.AdaptiveAvgPool2d((4, 4)),
-            nn.Flatten(),
-            nn.Linear(16 * 4 * 4, 32),
-            nn.GELU(),
-            nn.Linear(32, 2)
+            nn.AdaptiveAvgPool2d(1),
         )
 
-        self.head = nn.Linear(16, 2, bias=False)
+        self.head = nn.Linear(
+            16,
+            2,
+            bias=False,
+        )
+
+        nn.init.normal_(
+            self.head.weight,
+            std=0.02,
+        )
+
+        self.register_buffer(
+            "counts",
+            torch.zeros(2),
+        )
 
     def _bias(self):
         total = self.counts.sum() + 1e-5
@@ -59,11 +91,16 @@ class SequenceRouter(nn.Module):
             (B,T,D)
 
         returns:
-            run_mask : (B,) bool
+            run_mask:
+                (B,) bool
         """
 
-        pooled = x.mean(dim=1)
-        logits = self.proj(pooled)
+        h = x.unsqueeze(1)          # (B,1,T,D)
+
+        h = self.encoder(h)         # (B,16,1,1)
+        h = h.flatten(1)            # (B,16)
+
+        logits = self.head(h)       # (B,2)
 
         if self.training:
             logits = logits + self._bias()
@@ -91,6 +128,7 @@ class SequenceRouter(nn.Module):
         total = self.counts.sum().item()
         if total == 0:
             return 0.0
+
         return (
             self.counts[self.IDX_SKIP].item()
             / total
@@ -130,7 +168,7 @@ class TransformerBlock(nn.Module):
 
         if use_router:
             self.router = SequenceRouter(
-                d_model,
+                d_model=d_model,
                 gamma=router_gamma,
             )
 
@@ -187,11 +225,11 @@ class TransformerBlock(nn.Module):
 
         run_mask = self.router(x)
 
-        # tất cả skip
+        # toàn bộ skip
         if not run_mask.any():
             return x
 
-        # tất cả run
+        # toàn bộ run
         if run_mask.all():
             return self._run_block(
                 x,
@@ -199,7 +237,6 @@ class TransformerBlock(nn.Module):
                 attn_mask,
             )
 
-        # chỉ lấy những sequence cần chạy
         run_idx = run_mask.nonzero(
             as_tuple=True
         )[0]
