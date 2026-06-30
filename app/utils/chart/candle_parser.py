@@ -228,3 +228,89 @@ class CandleParser:
                 return "BEARISH_ENGULFING"
 
         return None
+    
+    # ── Swing ──────────────────────────────────────────────────────
+    def is_swing_high(self, i: int, window: int = None) -> bool:
+        w = window or self.swing_window
+        if i - w < 0 or i + w >= len(self.candles): return False
+        target = self.candles[i].high
+        return target == max(self.candles[j].high for j in range(i - w, i + w + 1))
+ 
+    def is_swing_low(self, i: int, window: int = None) -> bool:
+        w = window or self.swing_window
+        if i - w < 0 or i + w >= len(self.candles): return False
+        target = self.candles[i].low
+        return target == min(self.candles[j].low for j in range(i - w, i + w + 1))
+ 
+    # ── Sweep helpers ──────────────────────────────────────────────
+    def _find_active_swing_high(self, i: int, lookback: int, w: int) -> Optional[tuple[int, float]]:
+        start = max(0, i - lookback)
+        for j in range(i - w - 1, start - 1, -1):
+            if j - w < 0:
+                continue
+            if not self.is_swing_high(j, w):
+                continue
+            level = self.candles[j].high
+            already_broken = any(self.candles[k].close > level for k in range(j + 1, i))
+            if already_broken:
+                continue
+            return j, level
+        return None
+ 
+    def _find_active_swing_low(self, i: int, lookback: int, w: int) -> Optional[tuple[int, float]]:
+        start = max(0, i - lookback)
+        for j in range(i - w - 1, start - 1, -1):
+            if j - w < 0:
+                continue
+            if not self.is_swing_low(j, w):
+                continue
+            level = self.candles[j].low
+            already_broken = any(self.candles[k].close < level for k in range(j + 1, i))
+            if already_broken:
+                continue
+            return j, level
+        return None
+ 
+    # ── Sweep (Liquidity Grab) ───────────────────────────────────────
+    def is_swept(self, i: int, lookback: int = 20, swing_window: int = None) -> Optional[dict]:
+        """
+        Trả về dict số hóa đầy đủ thay vì chỉ string, để unit test/đo lường dễ dàng:
+        {
+          "type": "BEARISH_SWEEP" | "BULLISH_SWEEP",
+          "swept_candle_idx": i,
+          "swing_idx": j,
+          "swing_level": float,
+          "depth": float,          # độ sâu xuyên qua (đơn vị giá/bin, tuỳ input)
+        }
+        Trả về None nếu không có sweep.
+        """
+        w = swing_window or self.swing_window
+        if i - w < 0:
+            return None
+        curr = self.candles[i]
+ 
+        high_swing = self._find_active_swing_high(i, lookback, w)
+        if high_swing is not None:
+            j, level = high_swing
+            if curr.high > level and curr.close < level:
+                return {
+                    "type": "BEARISH_SWEEP",
+                    "swept_candle_idx": i,
+                    "swing_idx": j,
+                    "swing_level": level,
+                    "depth": round(curr.high - level, 6),
+                }
+ 
+        low_swing = self._find_active_swing_low(i, lookback, w)
+        if low_swing is not None:
+            j, level = low_swing
+            if curr.low < level and curr.close > level:
+                return {
+                    "type": "BULLISH_SWEEP",
+                    "swept_candle_idx": i,
+                    "swing_idx": j,
+                    "swing_level": level,
+                    "depth": round(level - curr.low, 6),
+                }
+ 
+        return None

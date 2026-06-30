@@ -8,3 +8,4 @@ app/memlm/trainer/__pycache__/
 app/memlm/utils/__pycache__/
 app/utils/chart/__pycache__/
 app/utils.zip
+__pycache__/
