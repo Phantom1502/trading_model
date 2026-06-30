@@ -13,8 +13,9 @@ Kỹ thuật cốt lõi:
 import torch
 import torch.nn as nn
 
-from .block import TransformerBlock, build_blocks
+from .block import TransformerBlock
 from .layers import RMSNorm, precompute_freqs_cis
+
 
 class MemoryLM(nn.Module):
     def __init__(
@@ -26,26 +27,19 @@ class MemoryLM(nn.Module):
         max_seq    : int   = 512,
         dropout    : float = 0.1,
         rope_base  : float = 10000.0,
-        use_router   : bool  = False,
-        router_gamma : float = 0.5,
     ):
         super().__init__()
         self.d_model  = d_model
         self.n_layers = n_layers
         self.max_seq  = max_seq
-        self.use_router = use_router
 
         self.token_emb = nn.Embedding(vocab_size, d_model)
         self.drop      = nn.Dropout(dropout)
 
-        self.blocks = build_blocks(
-            n_layers     = n_layers,
-            d_model      = d_model,
-            n_heads      = n_heads,
-            dropout      = dropout,
-            use_router   = use_router,
-            router_gamma = router_gamma,
-        )
+        self.blocks = nn.ModuleList([
+            TransformerBlock(d_model, n_heads, dropout, n_layers=n_layers)
+            for _ in range(n_layers)
+        ])
 
         self.norm_out = RMSNorm(d_model)
         self.lm_head  = nn.Linear(d_model, vocab_size, bias=False)
@@ -62,10 +56,7 @@ class MemoryLM(nn.Module):
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
 
-    def forward(
-        self, input_ids: torch.Tensor, 
-        attn_mask: torch.Tensor = None, 
-    ) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
         """
         input_ids : (B, T)
         Returns   : logits (B, T, vocab_size)
@@ -75,10 +66,10 @@ class MemoryLM(nn.Module):
 
         x         = self.drop(self.token_emb(input_ids))
         freqs_cis = self.freqs_cis.to(device)
-        
+
         for block in self.blocks:
             x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
-            
+
         return self.lm_head(self.norm_out(x))
 
 
@@ -98,6 +89,4 @@ def build_model(cfg) -> MemoryLM:
         max_seq    = cfg.model.max_seq,
         dropout    = cfg.model.dropout,
         rope_base  = getattr(cfg.model, "rope_base", 10000.0),
-        use_router   = getattr(cfg.model, 'use_router',   False),
-        router_gamma = getattr(cfg.model, 'router_gamma', 0.5),
     )
