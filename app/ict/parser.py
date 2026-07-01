@@ -12,14 +12,23 @@ from typing import List, Optional
 from .candle import Candle, parse_candles, build_raw_text
 
 
+# swing_window=2 ĐÃ XÁC NHẬN bằng thống kê (Giai đoạn 2, N=19.4M nến XAUUSD M1).
+# Lý do KHÔNG chọn window lớn hơn dù prominence (độ nổi bật) gần như bất biến
+# theo window: ràng buộc chart chỉ 20 nến — mỗi swing_window=w loại bỏ 2×w nến
+# ở biên khỏi khả năng đánh giá (thiếu context 2 bên). w=2 mất 20% biên (4 nến),
+# kỳ vọng ~3 swing/chart — cân bằng hợp lý. w=5 mất tới 50% biên, quá đắt cho
+# chart 20 nến dù về thống kê thuần "sạch" hơn. Xem README.md mục Swing High/Low.
+SWING_WINDOW_DEFAULT = 2
+
+
 class CandleParser:
-    def __init__(self, raw_text: str, swing_window: int = 2):
+    def __init__(self, raw_text: str, swing_window: int = SWING_WINDOW_DEFAULT):
         self.raw_text     = raw_text
         self.swing_window = swing_window
         self.candles: List[Candle] = parse_candles(raw_text)
 
     @classmethod
-    def from_candles(cls, candles: List[Candle], swing_window: int = 2) -> "CandleParser":
+    def from_candles(cls, candles: List[Candle], swing_window: int = SWING_WINDOW_DEFAULT) -> "CandleParser":
         """Dựng trực tiếp từ list Candle có sẵn (không parse lại text) — dùng
         chủ yếu trong golden test, nơi case được khai báo bằng Candle(...) trực tiếp."""
         obj = cls.__new__(cls)
