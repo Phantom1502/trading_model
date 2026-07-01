@@ -23,6 +23,17 @@ from .structure import is_swing_high, is_swing_low
 from .basic import classify_direction
 
 
+# lookback=10 ĐÃ XÁC NHẬN bằng thống kê (Giai đoạn 2, N=19.4M nến, swing_window=2).
+# Tần suất sweep bão hòa rõ rệt sau lookback=10-15: lb=5→8.59%, lb=10→11.72%
+# (+3.13pp), lb=15→12.17% (+0.45pp), lb=20→12.23% (+0.06pp, gần như nhiễu).
+# lookback=10 capture ~96% giá trị khả dụng tối đa (so với lb=20) với chi phí
+# tìm kiếm thấp hơn. Depth distribution gần như bất biến theo lookback (giống
+# pattern prominence bất biến theo swing_window) — xác nhận lookback không ảnh
+# hưởng "chất lượng" sweep phát hiện được, chỉ ảnh hưởng số lượng. Xem README.md
+# mục Swept.
+SWEPT_LOOKBACK_DEFAULT = 10
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Swept
 # ══════════════════════════════════════════════════════════════════════
@@ -58,7 +69,7 @@ def _find_active_swing_low(
 def is_swept(
     parser: CandleParser,
     index: int,
-    lookback: int = 10,
+    lookback: int = SWEPT_LOOKBACK_DEFAULT,
     window: Optional[int] = None,
     _broken_swing_indices: Optional[set] = None,
 ) -> Optional[Dict[str, Any]]:
@@ -104,7 +115,7 @@ def is_swept(
     return None
 
 
-def scan_all_swept(parser: CandleParser, lookback: int = 10, window: Optional[int] = None) -> List[dict]:
+def scan_all_swept(parser: CandleParser, lookback: int = SWEPT_LOOKBACK_DEFAULT, window: Optional[int] = None) -> List[dict]:
     """
     Quét toàn chart, đảm bảo 1 swing đã bị sweep/phá thì KHÔNG được tính
     sweep lại lần sau (cộng dồn `broken` qua các vòng lặp) — đây là lý do
@@ -116,6 +127,7 @@ def scan_all_swept(parser: CandleParser, lookback: int = 10, window: Optional[in
         r = is_swept(parser, i, lookback=lookback, window=window, _broken_swing_indices=broken)
         if r:
             broken.add(r["swing_idx"])
+            broken.add(r["swept_candle_idx"])   # nến thực hiện sweep cũng không được dùng làm swing mới
             results.append(r)
     return results
 
@@ -176,20 +188,129 @@ def grade_fvg(parser: CandleParser, index: int, upto_index: Optional[int] = None
 # Shift / MSS — CHƯA triển khai, viết test trước theo nguyên tắc spec
 # ══════════════════════════════════════════════════════════════════════
 
-def is_shift(parser: CandleParser, index: int, trend: str, lookback: int = 10) -> Optional[Dict[str, Any]]:
+def is_shift(
+    parser: CandleParser,
+    index: int,
+    trend: str,
+    lookback: int = SWEPT_LOOKBACK_DEFAULT,
+    window: Optional[int] = None,
+    _broken_swing_indices: Optional[set] = None,
+) -> Optional[Dict[str, Any]]:
     """
-    STUB — chưa triển khai logic thật.
+    Kiểm tra nến tại `index` có phá cấu trúc (Shift / MSS) hay không, dựa
+    trên swing gần nhất trong `lookback`. Trả về BOS nếu phá cùng hướng
+    `trend` hiện tại (tiếp diễn), CHoCH nếu phá ngược hướng (đảo chiều).
 
-    Theo lộ trình (spec mục 10, Giai đoạn 3): viết tests/test_shift.py
-    TRƯỚC để định nghĩa rõ behavior mong muốn (đặc biệt phân biệt BOS
-    tiếp diễn trend vs CHoCH đảo chiều trend, và case near_miss_wick_only
-    — wick chạm/vượt swing nhưng giá ĐÓNG CỬA không vượt thì KHÔNG tính
-    là shift), rồi mới cài logic vào đây.
+    Khác is_swept(): dùng CLOSE (không phải High/Low) để xác định phá —
+    cấu trúc cần được "xác nhận" bằng giá đóng cửa, wick chạm qua không đủ
+    (xem tests/test_shift.py, case near_miss_wick_only_no_close_break).
 
-    `trend`: hướng trend hiện tại trước khi xét shift ("BULL"|"BEAR"),
-    cần truyền vào từ caller vì hàm này không tự suy ra trend dài hạn.
+    `trend`: "BULL" | "BEAR" — hướng trend hiện tại TRƯỚC khi xét shift,
+    do caller truyền vào (hàm này không tự suy ra trend dài hạn).
+
+    `_broken_swing_indices`: giống is_swept(), set các swing_idx ĐÃ bị
+    phá trước đó trong cùng 1 lần quét toàn chart — truyền vào để đảm bảo
+    swing đã shift rồi không được dùng làm mốc tham chiếu lại. Khi gọi
+    đơn lẻ (không quét toàn chart) có thể bỏ qua tham số này.
+
+    Quy tắc suy BOS/CHoCH:
+        trend=BULL, phá Swing High (Close > level) -> BOS,   direction=BULL
+        trend=BULL, phá Swing Low  (Close < level) -> CHoCH, direction=BEAR
+        trend=BEAR, phá Swing Low  (Close < level) -> BOS,   direction=BEAR
+        trend=BEAR, phá Swing High (Close > level) -> CHoCH, direction=BULL
+
+    Tie-breaking: chỉ báo cáo swing GẦN NHẤT trong lookback (nhất quán với
+    is_swept), dù nến có phá nhiều swing xa hơn cùng lúc.
+
+    Trả về dict: {"type", "direction", "shift_candle_idx", "swing_idx",
+    "swing_level", "broken_type"} hoặc None nếu không có shift.
     """
-    raise NotImplementedError(
-        "is_shift() chưa triển khai — viết tests/test_shift.py trước theo "
-        "nguyên tắc test-first đã chốt trong spec (Giai đoạn 3)."
-    )
+    if trend not in ("BULL", "BEAR"):
+        raise ValueError(f"trend phải là 'BULL' hoặc 'BEAR', nhận: {trend!r}")
+
+    broken = _broken_swing_indices or set()
+    candle = parser[index]
+
+    if trend == "BULL":
+        continuation_swing = _find_active_swing_high(parser, index, lookback, window)
+        if continuation_swing and continuation_swing["swing_idx"] not in broken:
+            if candle.close > continuation_swing["swing_level"]:
+                return {
+                    "type"            : "BOS",
+                    "direction"       : "BULL",
+                    "shift_candle_idx": index,
+                    "swing_idx"       : continuation_swing["swing_idx"],
+                    "swing_level"     : continuation_swing["swing_level"],
+                    "broken_type"     : "HIGH",
+                }
+        reversal_swing = _find_active_swing_low(parser, index, lookback, window)
+        if reversal_swing and reversal_swing["swing_idx"] not in broken:
+            if candle.close < reversal_swing["swing_level"]:
+                return {
+                    "type"            : "CHoCH",
+                    "direction"       : "BEAR",
+                    "shift_candle_idx": index,
+                    "swing_idx"       : reversal_swing["swing_idx"],
+                    "swing_level"     : reversal_swing["swing_level"],
+                    "broken_type"     : "LOW",
+                }
+
+    else:   # trend == "BEAR"
+        continuation_swing = _find_active_swing_low(parser, index, lookback, window)
+        if continuation_swing and continuation_swing["swing_idx"] not in broken:
+            if candle.close < continuation_swing["swing_level"]:
+                return {
+                    "type"            : "BOS",
+                    "direction"       : "BEAR",
+                    "shift_candle_idx": index,
+                    "swing_idx"       : continuation_swing["swing_idx"],
+                    "swing_level"     : continuation_swing["swing_level"],
+                    "broken_type"     : "LOW",
+                }
+        reversal_swing = _find_active_swing_high(parser, index, lookback, window)
+        if reversal_swing and reversal_swing["swing_idx"] not in broken:
+            if candle.close > reversal_swing["swing_level"]:
+                return {
+                    "type"            : "CHoCH",
+                    "direction"       : "BULL",
+                    "shift_candle_idx": index,
+                    "swing_idx"       : reversal_swing["swing_idx"],
+                    "swing_level"     : reversal_swing["swing_level"],
+                    "broken_type"     : "HIGH",
+                }
+
+    return None
+
+
+def scan_all_shift(
+    parser: CandleParser,
+    initial_trend: str,
+    lookback: int = SWEPT_LOOKBACK_DEFAULT,
+    window: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Quét toàn chart, xử lý 2 việc mà gọi is_shift() đơn lẻ KHÔNG tự làm được:
+
+        1. Trend EVOLVE theo thời gian: khi gặp CHoCH, trend đảo chiều
+           cho các lần quét TIẾP THEO (BOS giữ nguyên trend hiện tại).
+        2. Swing đã bị shift rồi KHÔNG được dùng làm mốc tham chiếu lại
+           (cộng dồn `broken` set, cùng nguyên tắc với scan_all_swept()).
+
+    `initial_trend`: trend giả định TẠI NẾN ĐẦU chart — đây là input bên
+    ngoài (vd suy từ HTF bias, hoặc quy ước đơn giản của caller), hàm này
+    KHÔNG tự suy ra được, phải truyền vào tường minh.
+    """
+    trend: str = initial_trend
+    broken: set = set()
+    results = []
+
+    for i in range(len(parser)):
+        r = is_shift(parser, i, trend=trend, lookback=lookback, window=window, _broken_swing_indices=broken)
+        if r:
+            broken.add(r["swing_idx"])
+            broken.add(r["shift_candle_idx"])   # nến thực hiện shift cũng không dùng làm swing mới
+            if r["type"] == "CHoCH":
+                trend = r["direction"]          # trend đảo chiều cho các lần quét sau
+            results.append(r)
+
+    return results
