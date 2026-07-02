@@ -2,7 +2,7 @@
 import json
 
 from app.gen.base_gen import BaseGenerator
-
+from ict.candle import Candle
 from typing import List, Dict
 import random
 
@@ -58,9 +58,10 @@ CANDLESTICK_TEMPLATES = {
 }
 
 class CandleGenerator(BaseGenerator):
-    def __init__(self, tokenizer=None, num_samples: int = 1024):
+    def __init__(self, tokenizer=None, num_samples: int = 1024, sample_per_count = 5):
         super().__init__(tokenizer)
         self.num_samples = num_samples
+        self.sample_per_count = sample_per_count
         self._count = 0
 
     def __next__(self) -> List[Dict]:
@@ -71,31 +72,32 @@ class CandleGenerator(BaseGenerator):
             if self._count >= self.num_samples:
                 break
 
-            for candle_type in ["O", "H", "L", "C"]:
-                high_distance = random.randint(0, 20)
-                low_distance = random.randint(0, 20)
-                high_clip = min(1023, self._count + high_distance)
-                low_clip = max(0, self._count - low_distance)
-                close_price = random.randint(low_clip, high_clip)
-                candle = Candle(
-                    open=self._count,
-                    high=high_clip,
-                    low=low_clip,
-                    close=close_price
-                )
-                price_type = candle.open if candle_type == "O" else candle.high if candle_type == "H" else candle.low if candle_type == "L" else candle.close
-                template = random.choice(CANDLESTICK_TEMPLATES[candle_type])
-                gen_text = template.format(chart=candle.tag(), i=price_type)
-                meta = {
-                    "type": "candlestick"
-                }
-                token_length = len(self.tokenizer.encode(gen_text)) if self.tokenizer else 0
-                batch.append({
-                    "text": gen_text,
-                    "source": "candlestick",
-                    "token_length": token_length,
-                    "meta": json.dumps(meta, ensure_ascii=False)
-                })
+            for _ in range(self.sample_per_count): # self.sample_per_count samples per count
+                for candle_type in ["O", "H", "L", "C"]:
+                    high_distance = random.randint(0, 20)
+                    low_distance = random.randint(0, 20)
+                    high_clip = min(1023, self._count + high_distance)
+                    low_clip = max(0, self._count - low_distance)
+                    close_price = random.randint(low_clip, high_clip)
+                    candle = Candle(
+                        open=self._count,
+                        high=high_clip,
+                        low=low_clip,
+                        close=close_price
+                    )
+                    price_type = candle.open if candle_type == "O" else candle.high if candle_type == "H" else candle.low if candle_type == "L" else candle.close
+                    template = random.choice(CANDLESTICK_TEMPLATES[candle_type])
+                    gen_text = template.format(chart=candle.tag(), i=price_type)
+                    meta = {
+                        "type": "candlestick"
+                    }
+                    token_length = len(self.tokenizer.encode(gen_text)) if self.tokenizer else 0
+                    batch.append({
+                        "text": gen_text,
+                        "source": "trading",
+                        "token_length": token_length,
+                        "meta": json.dumps(meta, ensure_ascii=False)
+                    })
             self._count += 1
 
         return batch
