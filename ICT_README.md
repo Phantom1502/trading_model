@@ -40,6 +40,7 @@ app/ict/
     ├── test_fvg_graded.py
     ├── test_shift.py
     ├── test_relations.py
+    ├── test_relations_integration.py
     └── test_facts.py
 ```
 
@@ -52,7 +53,7 @@ pip install pytest
 
 # Từ root project
 python -m pytest app/ict/tests/ -v
-# Expected: 75/75 passed
+# Expected: 83/83 passed
 ```
 
 ---
@@ -172,10 +173,11 @@ if result:
     # }
 ```
 
-> **Lưu ý:** `fill_pct` hiện phản ánh mức lấp **lớn nhất từng đạt được**
-> (max overlap qua các nến từ `index+1` đến `upto_index`), không phải
-> trạng thái tức thời của nến cuối. Hành vi này còn 1 KNOWN ISSUE cần
-> chốt (xem `test_fvg_graded.py::test_near_miss_fill_then_extend`).
+> **Lưu ý:** `fill_pct` phản ánh **vị trí hiện tại** — chỉ tính overlap của
+> nến CUỐI CÙNG (tại `upto_index`) với vùng gap, KHÔNG tích lũy lịch sử.
+> Nếu giá từng lấp sâu rồi rời khỏi gap, `fill_pct` sẽ GIẢM theo (không giữ
+> lại mức lấp sâu nhất từng đạt). Quyết định đã chốt, xem
+> `test_fvg_graded.py::test_near_miss_fill_then_extend`.
 
 ### Shift / MSS (BOS / CHoCH)
 
@@ -232,9 +234,35 @@ facts = build_facts(parser, initial_trend="BULL", lookback=10)
 # }
 ```
 
+### Quan hệ giữa các event (`relations`)
+
+`facts["relations"]` (đã tự động gọi bên trong `build_facts`) là list quan
+hệ giữa MỌI CẶP event, mỗi phần tử:
+
+```python
+{
+    "event_a_idx": 1, "event_b_idx": 6,
+    "order"         : "A_BEFORE_B",   # | "B_BEFORE_A" | "SAME_CANDLE"
+    "same_direction": False,           # | True | None
+    "overlap"       : False,           # | True | None
+}
+```
+
+> **Rule tie-breaking `SAME_CANDLE` (đã quyết định 1 phần):** khi Swept và
+> Shift trùng đúng 1 nến (kịch bản kinh điển "nến breakout mạnh" — wick quét
+> thanh khoản, đóng cửa xác nhận phá cấu trúc), `order` tự động resolve
+> thành `A_BEFORE_B`/`B_BEFORE_A` theo rule **Swept-trước-Shift** (wick hình
+> thành trong lúc nến chạy, Close xác nhận sau). Case có **FVG** tham gia
+> vẫn giữ nguyên nhãn `SAME_CANDLE` — **chưa quyết định**, không suy đoán
+> thêm.
+>
+> Đây **không phải case hiếm** — trên chart thật, sweep+shift trùng nến xảy
+> ra khá tự nhiên khi 1 nến vừa xuyên wick qua swing vừa đóng cửa xác nhận,
+> xem `test_relations_integration.py::test_clear_swept_shift_same_candle_resolves_naturally`.
+
 ---
 
-## Ngưỡng đã xác nhận bằng thống kê (Giai đoạn 2 — hoàn tất phần Bull/Bear/Pin Bar)
+## Ngưỡng đã xác nhận bằng thống kê (Giai đoạn 2 — hoàn tất toàn bộ 5 detector chính)
 
 Chạy trên **19,403,600 nến XAUUSD M1** (`chart_XAUUSD_dataset_1Min.parquet`).
 
@@ -379,16 +407,86 @@ không phụ thuộc nhiều vào tham số cấu hình tìm kiếm.
 `max(0, upto_index - lookback)`), nên ràng buộc chart 20 nến ít nghiêm trọng
 hơn ở tham số này.
 
-### Còn thiếu — cần chạy thống kê tiếp
+### Shift / MSS — phân phối BOS/CHoCH
 
-5 detector chính (Bull/Bear, Pin Bar, FVG, Swing, Swept) đã có thống kê xác
-nhận. `is_shift()`/`scan_all_shift()` đã triển khai xong (Giai đoạn 3) —
-thống kê cho nó giờ có thể chạy được, chưa làm:
+Chạy trên cùng 194,036 chart (19,403,600 nến), `swing_window=2`, `lookback=10`,
+kiểm tra CẢ 2 giả định `initial_trend` để đo độ nhạy:
 
-| Đại lượng | Trạng thái | Ảnh hưởng tới |
+```
+                        initial=BULL       initial=BEAR
+BOS                     3.90%              3.88%
+CHoCH                   4.08%              4.09%
+Tỷ lệ BOS/CHoCH         48.8% / 51.2%      48.6% / 51.4%
+
+break_distance (p50 / p90 / p99, bin) — GẦN NHƯ BẤT BIẾN:
+  BOS                   7 / 26 / 67        7 / 26 / 67
+  CHoCH                 7 / 25 / 63        7 / 24 / 63
+
+Độ dài chuỗi BOS liên tiếp trước khi gặp CHoCH:
+  p50: 0   p75: 1   p90: 2   p95: 3   p99: 5   mean: 0.85   max: 11-12
+```
+
+**Phát hiện 1 — `initial_trend` gần như không ảnh hưởng kết quả tổng thể:**
+chênh lệch BULL vs BEAR chỉ ~0.02pp trên 19.4M nến. `scan_all_shift()` tự
+evolve trend theo shift thật đầu tiên gặp được, nên giả định ban đầu "rửa
+trôi" rất nhanh — không cần lo lắng khi chọn `initial_trend` cho Giai đoạn 5.
+
+**Phát hiện 2 — CHoCH nhiều hơn BOS, run length cực ngắn (mean=0.85, p50=0):**
+hơn nửa số lần shift, ngay sau đó là 1 CHoCH khác, hầu như không có BOS chen
+giữa. Ở `swing_window=2`, cấu trúc M1 XAUUSD gần như là **zigzag cục bộ liên
+tục**, không phải "trend bền vững nhiều bước" — hợp lý với mục đích entry
+micro-structure (scalping-style), không phải theo dõi xu hướng dài hạn.
+
+**Ý nghĩa cho Q-score:** vì phần lớn shift là chuỗi ngắn/đảo chiều liên tục,
+nhãn binary BOS/CHoCH không tự nói lên "mạnh/yếu" (giống Pin Bar, FVG đã bàn
+trước) — `break_distance` sẽ là tín hiệu quan trọng hơn khi tính Q-score
+tổng hợp: CHoCH với break_distance 2-3 bin (gần noise) khác hẳn ý nghĩa so
+với CHoCH 25+ bin.
+
+---
+
+### Quy luật chung xuyên suốt cả 4 detector (Swing / FVG / Swept / Shift)
+
+Thống kê ở tất cả 4 nhóm trên đều cho ra **cùng 1 phát hiện lặp lại**:
+
+| Detector | Đại lượng "độ mạnh" | Bất biến theo tham số nào |
 |---|---|---|
-| Tần suất BOS vs CHoCH, phân phối khoảng cách Close vượt swing_level | ❌ Chưa chạy | Q-score graded cho Shift, phân biệt BOS/CHoCH "mạnh/yếu" |
-| Phân phối độ dài "chuỗi BOS liên tiếp" trước khi có CHoCH | ❌ Chưa chạy | Hiểu độ bền trend trong data thật, hữu ích cho việc chọn `initial_trend` khi render curriculum |
+| Swing | `prominence` | `swing_window` (1→5) |
+| FVG | `gap_size_bins` | (không có tham số tìm kiếm, nhưng phân phối ổn định) |
+| Swept | `depth` | `lookback` (5→20) |
+| Shift | `break_distance` | `initial_trend` (BULL/BEAR) |
+
+**Tham số cấu hình tìm kiếm (window/lookback/initial state) quyết định SỐ
+LƯỢNG sự kiện phát hiện được, KHÔNG quyết định ĐỘ MẠNH của sự kiện sống
+sót.** Đây là quy luật đủ nhất quán (4/4 detector) để dùng làm nguyên tắc
+thiết kế chung: khi cần Q-score graded cho bất kỳ detector nào trong package
+này, ưu tiên tìm đại lượng "độ mạnh cục bộ" tương tự (chênh lệch/khoảng
+cách/kích thước tại điểm phát hiện) thay vì cố tinh chỉnh tham số tìm kiếm
+để lọc chất lượng — tham số tìm kiếm không làm việc đó tốt.
+
+---
+
+## Case study: bug chỉ integration test mới bắt được
+
+`tests/test_relations.py` (unit test, dùng dict event **tự tạo tay**) từng
+pass 100% trong khi `relations.py` có 1 bug thật: `_event_direction()` chỉ
+đọc field `"type"` để suy hướng BULL/BEAR, khớp đúng với Swept
+(`"SWEEP_HIGH"`/`"SWEEP_LOW"`) và FVG (`"BULL"`/`"BEAR"` trực tiếp) — nhưng
+Shift event dùng `"type"="BOS"`/`"CHoCH"` (không khớp pattern nào), khiến
+`same_direction` **luôn trả về `None` sai** cho mọi relation có Shift tham
+gia, dù event đó có sẵn field `"direction"` tường minh.
+
+Bug này **không bị unit test cũ bắt được** vì dict event trong
+`test_relations.py` được viết tay, không có case nào dùng đúng shape thật
+của Shift event. Chỉ khi `tests/test_relations_integration.py` chạy
+`build_relations()` trên **output thật** của `build_facts()` (dict event do
+chính `scan_all_shift()` sinh ra) mới lộ ra sai lệch.
+
+**Bài học áp dụng cho phần còn lại của package:** unit test với dict/data tự
+tạo tay dễ vô tình "khớp đúng" giả định của code đang test — không thay thế
+được ít nhất 1 lượt integration test chạy trên pipeline thật trước khi coi
+1 module là "đã xong". Nguyên tắc này nên áp dụng lại khi triển khai
+`render.py`/`validate.py` ở Giai đoạn 5.
 
 ---
 
@@ -401,14 +499,14 @@ thống kê cho nó giờ có thể chạy được, chưa làm:
 | `basic.py` | ✅ Xong | Ngưỡng ĐÃ XÁC NHẬN bằng thống kê thật (N=19.4M nến XAUUSD M1) |
 | `structure.py` | ✅ Xong | |
 | `ict.py::is_swept` / `scan_all_swept` | ✅ Xong | 10/10 golden test pass (8 gốc + 2 bổ sung) |
-| `ict.py::grade_fvg` | ⚠️ Nháp | Logic có, chưa chốt behavior `fill_pct` (KNOWN ISSUE) |
+| `ict.py::grade_fvg` | ✅ Xong | `fill_pct` = vị trí hiện tại (không tích lũy), đã chốt qua golden test |
 | `ict.py::is_shift` / `scan_all_shift` | ✅ Xong | 11/11 golden test pass (test-first: viết test trước khi có logic) |
-| `relations.py` | ✅ Xong | Tie-breaking `SAME_CANDLE` chưa có rule ưu tiên (by design) |
+| `relations.py` | ✅ Xong | Tie-breaking Swept-trước-Shift ĐÃ quyết định; case có FVG vẫn `SAME_CANDLE` (chưa quyết định) |
 | `facts.py` | ✅ Xong | `initial_trend` giờ BẮT BUỘC (không default) — gọi thiếu raise `TypeError` |
 | `render.py` | ❌ Stub | Giai đoạn 5 |
 | `validate.py` | ❌ Stub | Giai đoạn 5 |
 
-**Tổng 75/75 golden test pass** trên toàn bộ `app/ict/tests/` (13 file, xem
+**Tổng 83/83 golden test pass** trên toàn bộ `app/ict/tests/` (14 file, xem
 mục Cấu trúc ở đầu README để biết breakdown theo từng module).
 
 ---
@@ -417,7 +515,9 @@ mục Cấu trúc ở đầu README để biết breakdown theo từng module).
 
 **Giai đoạn 2 — ✅ Hoàn tất.** Toàn bộ 5 detector chính (Bull/Bear, Pin Bar,
 FVG, Swing, Swept) đã có thống kê xác nhận trên data XAUUSD M1 thật, xem
-mục "Ngưỡng đã xác nhận" ở trên.
+mục "Ngưỡng đã xác nhận" ở trên. Thống kê BOS/CHoCH của Shift (việc #1 bên
+dưới) cũng đã hoàn tất, dù `is_shift()` thuộc Giai đoạn 3 — xếp gộp vào đây
+vì cùng bản chất "thống kê xác nhận tham số".
 
 **Giai đoạn 3 — ✅ Hoàn tất.** `is_shift()`/`scan_all_shift()` đã triển khai
 theo test-first, 11/11 golden test pass, đã wire vào `facts.py` (yêu cầu
@@ -425,12 +525,13 @@ theo test-first, 11/11 golden test pass, đã wire vào `facts.py` (yêu cầu
 
 **Việc còn lại — chưa làm, KHÔNG overlap nhau:**
 
-| # | Việc | Thuộc giai đoạn | Phụ thuộc |
-|---|---|---|---|
-| 1 | Thống kê BOS/CHoCH (tần suất, phân phối) trên data thật | Giai đoạn 2 (bổ sung muộn) | Không — có thể chạy ngay, script tương tự `stats_swept.py` |
-| 2 | Chốt behavior `fill_pct` trong `grade_fvg()` (KNOWN ISSUE — hiện giữ max lịch sử, cần quyết định có đổi sang "trạng thái sau cùng" không) | Giai đoạn 3 (còn sót lại) | Không — độc lập, chỉ cần quyết định + sửa 1 hàm |
-| 3 | Chạy `build_relations()` trên output thật của `build_facts()` (không chỉ unit test tay) — kiểm tra rule tie-breaking `SAME_CANDLE` có cần chốt logic ưu tiên không khi gặp data thật | Giai đoạn 4 | Cần việc 1 xong trước (để có đủ cả 3 loại event: swept + fvg + shift trong data thật) |
-| 4 | Triển khai `render.py` (4 dạng mẫu tin) + `validate.py` | Giai đoạn 5 | Cần việc 2, 3 xong trước — fact JSON phải đáng tin trước khi render thành data training |
+| # | Việc | Trạng thái | Thuộc giai đoạn | Phụ thuộc |
+|---|---|---|---|---|
+| 1 | ~~Thống kê BOS/CHoCH trên data thật~~ | ✅ **Đã xong** — xem mục "Shift / MSS" ở trên | Giai đoạn 2 (bổ sung muộn) | — |
+| 2 | ~~Chốt behavior `fill_pct` trong `grade_fvg()`~~ | ✅ **Đã xong** — `fill_pct` = vị trí hiện tại (không tích lũy), 2 test mới xác nhận | Giai đoạn 3 (còn sót lại) | — |
+| 3 | ~~Chạy `build_relations()` trên output thật của `build_facts()`~~ | ✅ **Đã xong** — phát hiện + fix 1 bug thật (`_event_direction` bỏ sót field `direction` của Shift), chốt rule Swept-trước-Shift khi trùng nến. Xem mục "Case study" ở trên | Giai đoạn 4 | — |
+| 4 | Triển khai `render.py` (4 dạng mẫu tin) + `validate.py` | ❌ Chưa làm | Giai đoạn 5 | Không còn phụ thuộc gì — Giai đoạn 2, 3, 4 đã khép lại hoàn toàn |
 
-**Đề xuất thứ tự làm:** 1 → 2 → 3 → 4 (việc 1 và 2 độc lập nhau, có thể làm
-song song nếu muốn; việc 3 và 4 bắt buộc tuần tự sau).
+**Việc duy nhất còn lại: #4 (Giai đoạn 5).** Toàn bộ fact JSON (Swept + FVG
++ Shift + Relations) giờ đã đáng tin — đủ điều kiện để bắt đầu render
+thành data training.

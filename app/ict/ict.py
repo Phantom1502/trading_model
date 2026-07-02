@@ -141,15 +141,13 @@ def grade_fvg(parser: CandleParser, index: int, upto_index: Optional[int] = None
     Mở rộng is_fvg() (structure.py) thành graded: size gap (bin) + % đã lấp
     tính tại thời điểm `upto_index` (mặc định = cuối parser, tức "hiện tại").
 
-    fill_pct phản ánh trạng thái SAU CÙNG tại upto_index, KHÔNG PHẢI mức
-    lấp sâu nhất từng đạt được trong quá khứ — quyết định đã chốt theo
-    spec mục 9, case near_miss_fill_then_extend. Nghĩa là nếu giá đã lấp
-    50% rồi đảo chiều mở rộng gap trở lại, fill_pct phải phản ánh đúng
-    mức tại thời điểm hỏi, không giữ lại "lịch sử lấp sâu nhất".
+    fill_pct phản ánh VỊ TRÍ HIỆN TẠI — chỉ overlap của NẾN CUỐI CÙNG
+    (tại upto_index) với vùng gap, KHÔNG tích lũy lịch sử. Quyết định đã
+    chốt: nếu giá từng lấp sâu rồi đảo chiều rời khỏi gap, fill_pct PHẢI
+    giảm theo, không giữ lại mức lấp sâu nhất từng đạt được (đã xác nhận
+    qua tests/test_fvg_graded.py, case near_miss_fill_then_extend).
 
-    CẢNH BÁO: hàm này CHƯA có golden test xác nhận (tests/test_fvg_graded.py
-    chưa viết) — coi là bản nháp tham số, không dùng để gen data chính
-    thức cho tới khi qua Giai đoạn 3 trong lộ trình.
+    upto_index == index (chưa có nến nào sau khi FVG hình thành) -> fill_pct = 0.
     """
     from .structure import is_fvg
 
@@ -163,14 +161,15 @@ def grade_fvg(parser: CandleParser, index: int, upto_index: Optional[int] = None
     gap_size = gap_high - gap_low
 
     upto = upto_index if upto_index is not None else len(parser) - 1
-    filled = 0
-    for i in range(index + 1, upto + 1):
-        c = parser[i]
-        # phần overlap giữa range nến i và vùng gap
+
+    if upto <= index:
+        filled = 0
+    else:
+        # CHỈ nến cuối cùng (upto), không quét toàn bộ range index+1..upto
+        c = parser[upto]
         overlap_low  = max(c.low,  gap_low)
         overlap_high = min(c.high, gap_high)
-        if overlap_high > overlap_low:
-            filled = max(filled, overlap_high - overlap_low)
+        filled = (overlap_high - overlap_low) if overlap_high > overlap_low else 0
 
     fill_pct = round(100.0 * filled / gap_size, 1) if gap_size > 0 else 100.0
 

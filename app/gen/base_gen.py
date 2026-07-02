@@ -1,6 +1,7 @@
 class BaseGenerator:
-    def __init__(self, tokenizer=None):
+    def __init__(self, tokenizer=None, batch_size: int = 2000):
         self.tokenizer = tokenizer
+        self.batch_size = batch_size
 
     def __iter__(self):
         return self
