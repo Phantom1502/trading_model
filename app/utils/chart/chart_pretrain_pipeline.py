@@ -201,7 +201,7 @@ class CurriculumGenerator:
         self.candles = parser.candles
         self.n       = len(parser)
         self._layers = [
-            self._layer0_concept,
+            #self._layer0_concept, layer 0 khá vô nghĩa
             self._layer1_classify,
             self._layer2_current_price,
             self._layer3_swing,

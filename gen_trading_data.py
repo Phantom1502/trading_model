@@ -77,8 +77,8 @@ if __name__ == "__main__":
 
     tokenizer = VietnameseTokenizer(pretrained_name=tok_path)
     
-    csv_path = r"data\XAUUSD_1Min.csv"
-    raw_parquet_path = r"data\chart_XAUUSD_dataset_1Min.parquet"
+    #csv_path = r"data\XAUUSD_1Min.csv"
+    raw_parquet_path = r"data\chart_XAUUSD_dataset_5Min.parquet"
     '''
     build_raw_dataset(
         input_ohlc  = csv_path,
@@ -88,17 +88,17 @@ if __name__ == "__main__":
         atr_period  = 100,
         stride      = 10
     )
-    
+    '''
     # gen base data
-    base_ds_output_path = r"data\XAUUSD_1Min_BASE_DS.parquet"
+    base_ds_output_path = r"data\XAUUSD_5Min_BASE_DS.parquet"
     gen_base_trading_data(
         tokenizer   = tokenizer,
-        source_name = "XAUUSD_1Min",
+        source_name = "XAUUSD_5Min",
         input_parquet_path  = raw_parquet_path,
         output_path = base_ds_output_path,
     )
     print(f"Đã tạo thành công {base_ds_output_path}")
-    
+    '''
     # gen action data
     action_output_path = r"data\XAUUSD_1Min_ACTION_DS.parquet"
     gen_action_data(
@@ -107,8 +107,9 @@ if __name__ == "__main__":
         output_path = action_output_path,
     )
     print(f"Đã tạo thành công {action_output_path}")
-    '''
+    
     # Nhánh 3
     book = BookPipeline(tokenizer, min_paragraph_len=500)
     book.build(input_dir="data/books", output_path="data/books.parquet")
     print(f"Đã tạo thành công data/books.parquet")
+    '''

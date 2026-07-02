@@ -12,19 +12,30 @@ _PARQUET_SCHEMA = pa.schema([
 
 # ====== CẤU HÌNH ======
 CHUNK_TOKEN_LIMIT = 1_000_000_000   # 1B token / file gộp
-OUTPUT_DIR        = "E:/LLM Dataset/Mix/merged_output"
+OUTPUT_DIR        = r"E:\LLM Dataset\Mix\merged_output"
 CHECKPOINT_PATH   = os.path.join(OUTPUT_DIR, "checkpoint.json")
 INTERLEAVE_TOKENS = 1_000_000     # "nếm" tối đa bao nhiêu token từ 1 category rồi mới đổi cat khác
 PART_FLUSH_TOKENS = 50_000_000    # gom nhiều đợt interleave lại, đủ ngưỡng này mới ghi 1 part-file
 
 CATEGORY_CONFIG = {
     "vi": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/vi/*.parquet")), "ratio": 0.1}, # 63GB
-    "wiki_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/wiki_en/*.parquet")), "ratio": 0.2}, # 6.7GB
+    "wiki_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/wiki_en/*.parquet")), "ratio": 0.1}, # 6.7GB
     "python": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/python/*.parquet")), "ratio": 0.3}, # 4GB
     "math": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/math/*.parquet")), "ratio": 0.15}, # 2.8GB
     "social_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/social_en/*.parquet")), "ratio": 0.1}, # 200GB
-    "trading": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/trading/*.parquet")), "ratio": 0.15}, # 1.5GB
+    "trading": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/trading/*.parquet")), "ratio": 0.25}, # 1.5GB
 }
+'''
+
+CATEGORY_CONFIG = {
+    "basic": {"files": sorted(glob.glob(r"E:\LLM Dataset\Mix\trading\basic_generator.parquet")), "ratio": 0.01}, # 63GB
+    "candle": {"files": sorted(glob.glob(r"E:\LLM Dataset\Mix\trading\candle_generator.parquet")), "ratio": 0.01}, # 6.7GB
+    "gap": {"files": sorted(glob.glob(r"E:\LLM Dataset\Mix\trading\gap_generator.parquet")), "ratio": 0.01}, # 4GB
+    "math": {"files": sorted(glob.glob(r"E:\LLM Dataset\Mix\trading\math_generator.parquet")), "ratio": 0.01}, # 2.8GB
+    "book": {"files": sorted(glob.glob(r"E:\LLM Dataset\Mix\trading\trading_book.parquet")), "ratio": 0.01}, # 200GB
+    "trading1": {"files": sorted(glob.glob(r"E:\LLM Dataset\Mix\trading\XAUUSD_M1_base.parquet")), "ratio": 0.8}, # 1.5GB
+    "trading2": {"files": sorted(glob.glob(r"E:\LLM Dataset\Mix\trading\XAUUSD_M5_base.parquet")), "ratio": 0.15}, # 1.5GB
+}'''
 assert abs(sum(c["ratio"] for c in CATEGORY_CONFIG.values()) - 1.0) < 1e-6
 
 # ====== CHECKPOINT STATE ======
