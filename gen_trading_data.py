@@ -219,7 +219,7 @@ if __name__ == "__main__":
     
     # read output parquet to verify
     import pyarrow.parquet as pq
-    table = pq.read_table("data/chart_XAUUSD_dataset_1Min_samples.parquet")
+    table = pq.read_table("data/chart_XAUUSD_dataset_1Min_W20_samples.parquet")
     df = table.to_pandas()
 
-    print(df[100])
+    print(df.iloc[100])

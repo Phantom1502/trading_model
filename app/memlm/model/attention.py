@@ -43,10 +43,8 @@ class SelfAttentionRoPE(nn.Module):
         q = apply_rope(q, freqs_cis)
         k = apply_rope(k, freqs_cis)
 
-        # FIX 1 (tiếp): kiểm tra self.training ĐỘNG, ngay lúc forward
         dropout_p = self.dropout if self.training else 0.0
 
-        # FIX 2: bỏ autocast cục bộ — để training loop bên ngoài quản lý precision
         out = F.scaled_dot_product_attention(
             query=q, key=k, value=v,
             attn_mask=attn_mask,

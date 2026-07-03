@@ -55,7 +55,7 @@ pip install pytest
 
 # Từ root project
 python -m pytest app/ict/tests/ -v
-# Expected: 102/102 passed
+# Expected: 108/108 passed
 ```
 
 ---
@@ -284,7 +284,8 @@ samples = render_all_samples(facts, parser.raw_text, rng=random.Random(42))
 #   "explanation": "Nến thứ 6 quét qua đỉnh cũ ...",
 #   "eval": "<eval>TYPE=SWEEP_HIGH CANDLE=6 ...</eval>",
 #   "text": "<chart>...\n{request}\n{explanation}\n{eval}",  # 4 phần ghép sẵn
-#   "event_count": 2,
+#   "event_count": 2,        # số event ĐÃ HIỂN THỊ (sau khi lọc top-K nếu có)
+#   "total_event_count": 2,  # số event THẬT SỰ phát hiện (trước khi lọc)
 # }
 ```
 
@@ -296,6 +297,45 @@ samples = render_all_samples(facts, parser.raw_text, rng=random.Random(42))
 > Đánh số nến trong text/eval là **1-based** (khớp convention
 > `candle_parser.py`), trong khi mọi index trong fact dict là 0-based —
 > `render.py` tự động +1 khi hiển thị.
+
+### Top-K cho FVG — giới hạn dựa trên dữ liệu thật
+
+> **Phát hiện quan trọng từ validate quy mô lớn (5.7M dòng, cửa sổ 20 nến):**
+> giới hạn cửa sổ 20 nến MỘT MÌNH KHÔNG ĐỦ tránh vượt `max_seq=512`. Mật độ
+> FVG (~25%/nến) đủ cao để mẫu FVG đơn lẻ đã vượt ngân sách ngay ở **p50**
+> (536 token, 51.13% mẫu vượt 512), mẫu Tổng hợp còn nặng hơn (**p50=730,
+> 87.99% vượt 512**). Swept/Shift KHÔNG cần giới hạn — 0% vượt ngân sách ở
+> cùng thống kê.
+
+`render_fvg_sample` và phần FVG trong `render_synthesis_sample` áp dụng
+`FVG_TOP_K` (mặc định = 4): nếu số FVG thật sự phát hiện vượt ngưỡng này,
+chỉ giữ lại K event **đáng chú ý nhất**, chọn theo 2 tiêu chí kết hợp:
+
+1. **Gần vùng giá hiện tại** — khoảng cách `|trung điểm gap - Close nến cuối|`
+2. **Gần về thời gian** — `candle_idx` gần cuối cửa sổ hơn
+
+Kết hợp bằng **rank** (không phải giá trị thô, vì 2 đại lượng khác đơn vị):
+mỗi tiêu chí xếp hạng riêng, cộng 2 rank lại, giữ K event có tổng rank nhỏ
+nhất — sau đó **sắp xếp lại theo thứ tự thời gian** khi hiển thị (rank chỉ
+quyết định giữ/bỏ, không quyết định thứ tự đọc).
+
+```python
+from app.ict.render import FVG_TOP_K   # = 4, xem docstring render.py
+
+sample = render_fvg_sample(facts, raw_chart_text)
+sample["event_count"]        # <= FVG_TOP_K
+sample["total_event_count"]  # số FVG thật sự phát hiện (có thể > FVG_TOP_K)
+```
+
+> **`FVG_TOP_K=4` là giá trị mặc định BAN ĐẦU, CHƯA tối ưu bằng dữ liệu
+> thật** — nên regenerate 1 batch nhỏ + chạy lại `stats_validate.py` (mục
+> dưới) để xác nhận K này đã đủ kéo tỷ lệ vượt ngân sách xuống mức chấp
+> nhận được, điều chỉnh nếu cần.
+>
+> Mẫu Tổng hợp: khi FVG bị lọc, `facts["relations"]` (tính trên list ĐẦY
+> ĐỦ chưa lọc) được **remap lại chỉ số** để khớp đúng danh sách event đã
+> lọc trước khi build `SEQUENCE` — tránh lỗi tham chiếu sai event sau khi
+> bớt phần tử.
 
 ### Validate sample đã render
 
@@ -521,7 +561,7 @@ cách/kích thước tại điểm phát hiện) thay vì cố tinh chỉnh tham
 
 ---
 
-## Case study: bug chỉ integration test mới bắt được
+## Case study 1: bug chỉ integration test mới bắt được
 
 `tests/test_relations.py` (unit test, dùng dict event **tự tạo tay**) từng
 pass 100% trong khi `relations.py` có 1 bug thật: `_event_direction()` chỉ
@@ -545,6 +585,43 @@ tạo tay dễ vô tình "khớp đúng" giả định của code đang test —
 
 ---
 
+## Case study 2: validate quy mô lớn tìm ra vấn đề mà sandbox không thấy được
+
+Chạy `stats_validate.py` trên **5.7 triệu dòng data thật** (đã render, cửa
+sổ 20 nến) lộ ra 2 phát hiện mà toàn bộ test trong sandbox (dù đã 108 test)
+không hề bắt được — vì sandbox chỉ test trên vài chart tổng hợp nhỏ, không
+đủ đa dạng để chạm vào các trường hợp này:
+
+1. **Bug template thật (0.6% dòng fail `validate_no_leakage`):** 2 template
+   FVG có chữ số **"1"** trong câu tiếng Việt tự nhiên ("hình thành **1**
+   khoảng trống") — không phải số liệu từ fact dict, nhưng `validate_no_leakage`
+   (cố tình thiết kế đơn giản) hiểu nhầm là leak. Sandbox test trước đó
+   dùng seed ngẫu nhiên nhỏ, không may "trúng" đúng 2 template này — chỉ
+   khi chạy đủ lớn (hàng triệu dòng, mọi template variant đều được dùng
+   nhiều lần) mới chắc chắn lộ ra. Đã fix (bỏ chữ "1" thừa) + thêm
+   `test_clear_no_leakage_every_template_variant` duyệt **toàn bộ** template
+   một cách tất định (không phụ thuộc random seed) để chặn tái diễn.
+
+2. **Vấn đề thiết kế nghiêm trọng hơn nhiều (không phải bug code, mà là data
+   không như kỳ vọng):** dù đã giới hạn cửa sổ 20 nến, mẫu FVG đơn lẻ vẫn
+   vượt `max_seq=512` ngay ở **p50** (536 token, 51% mẫu vượt), mẫu Tổng hợp
+   còn nặng hơn (**p50=730, 88% vượt**). Nguyên nhân: mật độ FVG (~25%/nến)
+   đủ cao để riêng việc giới hạn cửa sổ KHÔNG đủ — quyết định "giảm cửa sổ
+   20 nến sẽ giải quyết được" (chốt trước khi có số liệu) hoá ra **không
+   đủ**, phải quay lại áp dụng `FVG_TOP_K` đã cân nhắc nhưng gác lại trước
+   đó.
+
+**Bài học:** cả 2 phát hiện đều chỉ lộ ra khi chạy **đủ lớn trên data thật**
+— không phải vì sandbox test sai, mà vì một số vấn đề (tần suất bug hiếm,
+phân phối đuôi dài của token length) về bản chất cần cỡ mẫu lớn mới bộc lộ
+rõ. Không nên coi 100% test pass trong sandbox là tín hiệu "sẵn sàng train" —
+luôn cần ít nhất 1 lượt validate + thống kê trên toàn bộ (hoặc phần lớn)
+dataset thật trước khi đưa vào train, đúng theo gate đã đặt ra ở Giai đoạn 5
+("tỷ lệ pass validate trên batch nhỏ đủ cao trước khi gen hàng loạt" — cần
+áp dụng lại tương tự sau khi gen hàng loạt, không chỉ trước).
+
+---
+
 ## Trạng thái triển khai
 
 | Module | Trạng thái | Ghi chú |
@@ -558,10 +635,10 @@ tạo tay dễ vô tình "khớp đúng" giả định của code đang test —
 | `ict.py::is_shift` / `scan_all_shift` | ✅ Xong | 11/11 golden test pass (test-first: viết test trước khi có logic) |
 | `relations.py` | ✅ Xong | Tie-breaking Swept-trước-Shift ĐÃ quyết định; case có FVG vẫn `SAME_CANDLE` (chưa quyết định) |
 | `facts.py` | ✅ Xong | `initial_trend` giờ BẮT BUỘC (không default) — gọi thiếu raise `TypeError` |
-| `render.py` | ✅ Xong (v1) | Template engine, KHÔNG dùng GPT. Chưa xử lý case "0 event" (SKIP, xem README) |
+| `render.py` | ✅ Xong (v1 + top-K) | Template engine, KHÔNG dùng GPT. `FVG_TOP_K=4` giới hạn theo dữ liệu thật. Chưa xử lý case "0 event" (SKIP, xem README) |
 | `validate.py` | ✅ Xong | `validate_cross_consistency` + `validate_no_leakage`, giản lược sau khi bỏ GPT |
 
-**Tổng 102/102 golden test pass** trên toàn bộ `app/ict/tests/` (16 file, xem
+**Tổng 108/108 golden test pass** trên toàn bộ `app/ict/tests/` (16 file, xem
 mục Cấu trúc ở đầu README để biết breakdown theo từng module).
 
 ---
@@ -591,6 +668,16 @@ theo test-first, 11/11 golden test pass, đã wire vào `facts.py` (yêu cầu
 functional end-to-end** (CSV → detector → fact JSON → 4 dạng mẫu tin →
 validate), xem demo chạy thật trong lịch sử session.
 
+**Giai đoạn 5.5 — ✅ Hoàn tất (bổ sung sau khi có data thật).** Chạy
+`stats_validate.py` trên 5.7M dòng đã gen, phát hiện + fix:
+- Bug template thật (0.6% fail `validate_no_leakage`) — 2 template FVG có
+  chữ "1" tự nhiên gây false-positive. Đã fix + thêm test duyệt toàn bộ
+  template (không phụ thuộc random seed).
+- Vấn đề thiết kế nghiêm trọng hơn: cửa sổ 20 nến một mình KHÔNG đủ tránh
+  vượt `max_seq=512` (FVG đơn lẻ p50=536, Tổng hợp p50=730). Đã thêm
+  `FVG_TOP_K=4` — chọn theo kết hợp gần giá hiện tại + gần thời gian, có
+  remap `relations`/`SEQUENCE` tương ứng khi lọc. Xem "Case study 2" ở trên.
+
 **Open item còn lại (domain decision, chưa tự ý làm):**
 - Chart 0 event (không phát hiện Swept/FVG/Shift nào) hiện bị `render.py`
   SKIP hoàn toàn — nếu cần data âm (negative example) cho training, cần
@@ -598,3 +685,9 @@ validate), xem demo chạy thật trong lịch sử session.
 - `render_synthesis_sample()` định dạng field `SEQUENCE` (`"1<2,3~1,..."`)
   là lựa chọn implementation của module, không phải hằng số cứng từ spec —
   có thể đổi nếu cần format khác dễ parse hơn.
+- **`FVG_TOP_K=4` chưa được xác nhận là đủ** — cần regenerate 1 batch với
+  code đã fix rồi chạy lại `stats_validate.py` để xem tỷ lệ vượt `max_seq`
+  đã giảm xuống mức chấp nhận được chưa; nếu vẫn còn nhiều (đặc biệt mẫu
+  Tổng hợp, do còn cộng thêm Swept/Shift không bị lọc), có thể cần giảm K
+  hơn nữa hoặc áp dụng lọc tương tự cho Swept/Shift dù thống kê hiện tại
+  cho thấy 2 loại đó chưa cần.

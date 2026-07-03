@@ -177,7 +177,7 @@ def get_110m_config() -> Config:
     cfg.train.warmup_steps          = 500
     cfg.train.lr_decay_cycle_steps  = 100_000  
     cfg.train.lr_min_ratio          = 0.1
-    cfg.train.batch_size  = 8
-    cfg.train.grad_accum  = 64
+    cfg.train.batch_size  = 16
+    cfg.train.grad_accum  = 32
     cfg.train.total_chunks          = -1
     return cfg

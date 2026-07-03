@@ -199,12 +199,85 @@ def test_clear_synthesis_includes_sequence_when_multiple_events():
 
 
 def test_clear_synthesis_event_count_matches_all_types():
-    """event_count của mẫu Tổng hợp phải bằng tổng số event cả 3 loại."""
+    """event_count của mẫu Tổng hợp phải bằng tổng số event cả 3 loại
+    (chart mẫu có <= FVG_TOP_K nên KHÔNG bị lọc — test riêng top-K bên dưới)."""
     facts, raw = _build_facts_and_raw(_multi_event_chart())
     rng = random.Random(11)
     sample = render_synthesis_sample(facts, raw, rng=rng)
     expected = len(facts["swept"]) + len(facts["fvg"]) + len(facts["shift"])
     assert sample["event_count"] == expected
+    assert sample["total_event_count"] == expected   # không lọc -> 2 field bằng nhau
+
+
+def _many_fvg_chart():
+    """7 FVG rõ ràng (>FVG_TOP_K=4), tách biệt hoàn toàn theo nhóm base giá cách xa."""
+    candles = []
+    for k in range(3):
+        base = 1000 + k * 300
+        candles += [
+            _c(base, base + 10, base - 5, base + 5),
+            _c(base + 15, base + 25, base + 12, base + 20),
+            _c(base + 30, base + 40, base + 25, base + 35),
+            _c(base + 20, base + 24, base + 10, base + 15),
+            _c(base + 15, base + 30, base + 5, base + 20),
+        ]
+    return candles
+
+
+def test_boundary_fvg_top_k_reduces_event_count():
+    """Chart có 7 FVG (>FVG_TOP_K=4) -> render_fvg_sample CHỈ hiển thị 4,
+    nhưng total_event_count PHẢI vẫn phản ánh đúng 7 (minh bạch, không giấu
+    thông tin đã lọc)."""
+    from app.ict.render import FVG_TOP_K
+
+    facts, raw = _build_facts_and_raw(_many_fvg_chart())
+    assert len(facts["fvg"]) == 7
+    assert len(facts["fvg"]) > FVG_TOP_K
+
+    rng = random.Random(1)
+    sample = render_fvg_sample(facts, raw, rng=rng)
+    assert sample["event_count"] == FVG_TOP_K
+    assert sample["total_event_count"] == 7
+
+
+def test_clear_fvg_top_k_keeps_chronological_order():
+    """Kết quả lọc top-K vẫn giữ đúng thứ tự thời gian khi hiển thị (không
+    xáo trộn theo rank), chỉ QUYẾT ĐỊNH giữ/bỏ dựa trên rank."""
+    facts, raw = _build_facts_and_raw(_many_fvg_chart())
+    rng = random.Random(1)
+    sample = render_fvg_sample(facts, raw, rng=rng)
+
+    import re
+    candles_mentioned = [int(x) for x in re.findall(r"CANDLE=(\d+)", sample["eval"])]
+    assert candles_mentioned == sorted(candles_mentioned)   # tăng dần -> đúng thứ tự thời gian
+
+
+def test_clear_synthesis_top_k_and_relations_remap_correctly():
+    """Mẫu Tổng hợp với chart nhiều FVG -> event_count < total_event_count,
+    và SEQUENCE vẫn hợp lệ (không lỗi index sau khi remap relations)."""
+    from app.ict.render import FVG_TOP_K
+
+    facts, raw = _build_facts_and_raw(_many_fvg_chart())
+    rng = random.Random(1)
+    sample = render_synthesis_sample(facts, raw, rng=rng)
+
+    assert sample is not None
+    expected_kept = len(facts["swept"]) + FVG_TOP_K + len(facts["shift"])
+    expected_total = len(facts["swept"]) + len(facts["fvg"]) + len(facts["shift"])
+    assert sample["event_count"] == expected_kept
+    assert sample["total_event_count"] == expected_total
+    assert sample["event_count"] < sample["total_event_count"]
+
+    # SEQUENCE vẫn phải hợp lệ: đúng N-1 cặp theo N đã lọc (không phải N gốc)
+    import re
+    seq_match = re.search(r"SEQUENCE=([\d<~,]+)(?=</eval>)", sample["eval"])
+    assert seq_match is not None
+    pairs = len(seq_match.group(1).split(","))
+    assert pairs == expected_kept - 1   # N-1 theo N ĐÃ LỌC, không phải N gốc
+
+    # validate_no_leakage vẫn phải pass sau khi lọc (không có số liệu rác sót lại)
+    from app.ict.validate import validate_no_leakage
+    assert validate_no_leakage(sample) is True
 
 
 def test_clear_sequence_is_linear_not_quadratic():

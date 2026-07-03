@@ -27,10 +27,35 @@ GIỚI HẠN PHẠM VI (v1, CHƯA quyết định, không tự ý làm):
       implementation của module này (không phải hằng số cứng từ spec) —
       xem docstring _build_sequence_field() để biết chi tiết, có thể đổi
       nếu cần format khác dễ parse hơn.
+
+TOP-K CHO FVG (đã quyết định, dựa trên dữ liệu thật):
+    Validate quy mô lớn (5.7M dòng, cửa sổ 20 nến) cho thấy mật độ FVG
+    (~25%/nến) đủ cao để MỘT MÌNH giới hạn cửa sổ 20 nến KHÔNG đủ tránh
+    vượt max_seq=512 — mẫu FVG đơn lẻ đã vượt ngân sách ngay ở p50 (536
+    token), mẫu Tổng hợp vượt còn nặng hơn (87.99% > 512). Swept/Shift
+    KHÔNG cần giới hạn (0% vượt ngân sách theo cùng thống kê).
+
+    FVG_TOP_K giới hạn số FVG event hiển thị trong 1 mẫu — CHỌN theo kết
+    hợp 2 tiêu chí (không phải chỉ magnitude thuần):
+        1. Gần vùng giá HIỆN TẠI (Close của nến cuối cửa sổ)
+        2. Gần về THỜI GIAN (candle_idx gần cuối cửa sổ hơn)
+    Kết hợp bằng RANK (không phải giá trị thô, vì 2 đại lượng khác đơn vị)
+    — xem _select_top_k_fvg() để biết chi tiết thuật toán.
+
+    K=4 là giá trị mặc định BAN ĐẦU (chưa tối ưu bằng dữ liệu thật) — nên
+    regenerate 1 batch nhỏ + chạy lại stats_validate.py để xác nhận K này
+    đã đủ kéo tỷ lệ vượt ngân sách xuống mức chấp nhận được, điều chỉnh
+    nếu cần.
 """
 
 import random
 from typing import Dict, Any, List, Optional
+
+from .candle import parse_candles
+
+
+# FVG_TOP_K — xem docstring module "TOP-K CHO FVG" để biết lý do/căn cứ.
+FVG_TOP_K = 4
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -287,6 +312,64 @@ def _build_sequence_field(events: List[Dict[str, Any]], relations: List[Dict[str
 
 
 # ══════════════════════════════════════════════════════════════════════
+# TOP-K CHO FVG — xem docstring module để biết căn cứ dữ liệu thật
+# ══════════════════════════════════════════════════════════════════════
+
+def _current_price_and_n(raw_chart_text: str) -> tuple:
+    """Trích Close của nến CUỐI CÙNG (đại diện 'giá hiện tại') + tổng số
+    nến trong chart, bằng cách parse lại raw_chart_text (không cần truyền
+    thêm parser/candles vào mọi hàm render, giữ API ổn định)."""
+    candles = parse_candles(raw_chart_text)
+    if not candles:
+        return None, 0
+    return candles[-1].close, len(candles)
+
+
+def _select_top_k_fvg(
+    fvg_events: List[Dict[str, Any]],
+    raw_chart_text: str,
+    k: int = FVG_TOP_K,
+) -> tuple:
+    """
+    Chọn K FVG event ĐÁNG CHÚ Ý NHẤT theo 2 tiêu chí kết hợp:
+        1. Gần vùng giá hiện tại (khoảng cách |trung điểm gap - Close nến cuối|)
+        2. Gần về thời gian (candle_idx gần cuối cửa sổ hơn)
+
+    Kết hợp bằng RANK (mỗi tiêu chí xếp hạng riêng, 1=tốt nhất, cộng 2
+    rank lại, chọn K event tổng rank nhỏ nhất) — tránh phải chọn trọng số
+    giữa 2 đại lượng khác đơn vị (giá tính bin, thời gian tính số nến).
+
+    Trả về (list event đã lọc, list index GỐC trong fvg_events tương ứng)
+    — trả kèm index để caller (render_synthesis_sample) remap relations
+    chính xác, không phải tra cứu lại bằng .index() dễ vỡ nếu có event
+    trùng giá trị (dict so sánh bằng value, không phải identity).
+
+    Nếu len(fvg_events) <= k, trả về NGUYÊN VẸN (không cắt, không rank).
+    Kết quả LUÔN giữ đúng thứ tự thời gian gốc (chronological), không xáo
+    trộn theo rank — rank chỉ dùng để QUYẾT ĐỊNH giữ/bỏ, không phải thứ tự
+    hiển thị.
+    """
+    if len(fvg_events) <= k:
+        return fvg_events, list(range(len(fvg_events)))
+
+    current_price, n_candles = _current_price_and_n(raw_chart_text)
+    if current_price is None:
+        keep = list(range(len(fvg_events) - k, len(fvg_events)))   # fallback: giữ K event gần cuối nhất
+        return [fvg_events[i] for i in keep], keep
+
+    price_dists = [abs((e["gap_low"] + e["gap_high"]) / 2 - current_price) for e in fvg_events]
+    time_dists  = [(n_candles - 1) - e["fvg_candle_idx"] for e in fvg_events]
+
+    price_rank = {i: r for r, i in enumerate(sorted(range(len(fvg_events)), key=lambda i: price_dists[i]))}
+    time_rank  = {i: r for r, i in enumerate(sorted(range(len(fvg_events)), key=lambda i: time_dists[i]))}
+
+    combined_order = sorted(range(len(fvg_events)), key=lambda i: price_rank[i] + time_rank[i])
+    keep_indices = sorted(combined_order[:k])   # sort lại theo index gốc -> giữ thứ tự thời gian khi hiển thị
+
+    return [fvg_events[i] for i in keep_indices], keep_indices
+
+
+# ══════════════════════════════════════════════════════════════════════
 # RENDER — 4 dạng mẫu tin
 # ══════════════════════════════════════════════════════════════════════
 
@@ -295,8 +378,17 @@ def _render_single_type(
     request_key: str,
     raw_chart_text: str,
     rng: random.Random,
+    total_count: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Dùng chung cho Swept/FVG/Shift — chỉ khác request_key và events list."""
+    """
+    Dùng chung cho Swept/FVG/Shift — chỉ khác request_key và events list.
+
+    `total_count`: tổng số event THẬT SỰ phát hiện được (trước khi lọc
+    top-K, nếu có) — mặc định = len(events) khi không lọc gì. Field
+    "total_event_count" trong kết quả LUÔN phản ánh số thật, "event_count"
+    phản ánh số ĐÃ HIỂN THỊ — minh bạch khi có lọc bớt, không giấu thông
+    tin đã bỏ.
+    """
     if not events:
         return None   # v1: SKIP hoàn toàn khi không có event loại này (xem docstring module)
 
@@ -310,12 +402,13 @@ def _render_single_type(
     text = f"{raw_chart_text}\n{request}\n{explanation}\n{eval_block}"
 
     return {
-        "chart"      : raw_chart_text,
-        "request"    : request,
-        "explanation": explanation,
-        "eval"       : eval_block,
-        "text"       : text,
-        "event_count": len(events),
+        "chart"            : raw_chart_text,
+        "request"          : request,
+        "explanation"      : explanation,
+        "eval"             : eval_block,
+        "text"             : text,
+        "event_count"      : len(events),
+        "total_event_count": total_count if total_count is not None else len(events),
     }
 
 
@@ -326,9 +419,14 @@ def render_swept_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Optional
 
 
 def render_fvg_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Optional[random.Random] = None) -> Optional[Dict[str, Any]]:
-    """Dạng 2: chỉ nói về FVG."""
+    """
+    Dạng 2: chỉ nói về FVG. Áp dụng FVG_TOP_K nếu số FVG thật sự phát hiện
+    vượt ngưỡng — xem docstring module "TOP-K CHO FVG" để biết căn cứ.
+    """
     rng = rng or random
-    return _render_single_type(fact["fvg"], "fvg", raw_chart_text, rng)
+    all_fvg = fact["fvg"]
+    selected, _ = _select_top_k_fvg(all_fvg, raw_chart_text)
+    return _render_single_type(selected, "fvg", raw_chart_text, rng, total_count=len(all_fvg))
 
 
 def render_shift_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Optional[random.Random] = None) -> Optional[Dict[str, Any]]:
@@ -341,14 +439,45 @@ def render_synthesis_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Opti
     """
     Dạng 4: nói về CẢ 3 loại + quan hệ thứ tự (Tầng 2, field SEQUENCE).
 
+    Áp dụng FVG_TOP_K cho phần FVG (giống render_fvg_sample) — Swept/Shift
+    KHÔNG lọc (dữ liệu thật xác nhận không cần, xem docstring module).
+
     Thứ tự event trong `events` khớp ĐÚNG cách facts.build_facts() ghép
-    all_events (swept + fvg + shift) -> đảm bảo EVENT1/EVENT2/... trong
-    eval khớp đúng event_a_idx/event_b_idx trong facts["relations"].
+    all_events (swept + fvg + shift) TRƯỚC KHI lọc -> để tra cứu đúng
+    facts["relations"] gốc, sau đó REMAP index sang danh sách đã lọc.
     """
     rng = rng or random
-    events = fact["swept"] + fact["fvg"] + fact["shift"]
-    if not events:
+    swept_events = fact["swept"]
+    all_fvg = fact["fvg"]
+    shift_events = fact["shift"]
+
+    all_events_before_filter = swept_events + all_fvg + shift_events
+    if not all_events_before_filter:
         return None   # v1: SKIP khi chart hoàn toàn không có event nào (xem docstring module)
+
+    selected_fvg, fvg_local_indices = _select_top_k_fvg(all_fvg, raw_chart_text)
+
+    # Chỉ số GỐC (trong all_events_before_filter) của các event ĐƯỢC GIỮ —
+    # cần để remap facts["relations"] (được tính trên list CHƯA lọc)
+    n_swept = len(swept_events)
+    fvg_keep_original_indices = [n_swept + i for i in fvg_local_indices]
+    keep_original_indices = (
+        list(range(n_swept))                                                    # toàn bộ Swept
+        + fvg_keep_original_indices                                              # FVG đã lọc
+        + list(range(n_swept + len(all_fvg), n_swept + len(all_fvg) + len(shift_events)))  # toàn bộ Shift
+    )
+
+    events = [all_events_before_filter[i] for i in keep_original_indices]
+
+    old_to_new = {orig: new for new, orig in enumerate(keep_original_indices)}
+    filtered_relations = []
+    for r in fact["relations"]:
+        a, b = r["event_a_idx"], r["event_b_idx"]
+        if a in old_to_new and b in old_to_new:
+            remapped = dict(r)
+            remapped["event_a_idx"] = old_to_new[a]
+            remapped["event_b_idx"] = old_to_new[b]
+            filtered_relations.append(remapped)
 
     use_short = len(events) >= 3
     sentences = [_sentence_for_event(e, use_short, rng) for e in events]
@@ -357,7 +486,7 @@ def render_synthesis_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Opti
     request = rng.choice(_REQUEST_TEMPLATES["synthesis"])
     eval_block = _build_eval_block(events)
 
-    sequence_field = _build_sequence_field(events, fact["relations"])
+    sequence_field = _build_sequence_field(events, filtered_relations)
     if sequence_field:
         # Chèn SEQUENCE vào trong block <eval>...</eval>, trước dấu đóng
         eval_block = eval_block[:-len("</eval>")] + " " + sequence_field + "</eval>"
@@ -365,12 +494,13 @@ def render_synthesis_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Opti
     text = f"{raw_chart_text}\n{request}\n{explanation}\n{eval_block}"
 
     return {
-        "chart"      : raw_chart_text,
-        "request"    : request,
-        "explanation": explanation,
-        "eval"       : eval_block,
-        "text"       : text,
-        "event_count": len(events),
+        "chart"            : raw_chart_text,
+        "request"          : request,
+        "explanation"      : explanation,
+        "eval"             : eval_block,
+        "text"             : text,
+        "event_count"      : len(events),
+        "total_event_count": len(all_events_before_filter),
     }
 
 
