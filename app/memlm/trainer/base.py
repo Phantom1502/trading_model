@@ -116,8 +116,8 @@ class BaseTrainer:
             logits   = self.model(ids, attn_mask=mask)
             loss_sum = self.compute_loss(logits, labels)  # reduction="sum"
 
-        # Chuẩn hóa theo tổng token của CẢ cửa sổ accumulation, không phải
-        # theo grad_accum (số bước) và không phải theo token của riêng batch này.
+        # Chuẩn hóa GRADIENT theo tổng token của CẢ cửa sổ accumulation — đây
+        # là mẫu số đúng để weight các micro-batch với nhau khi cộng dồn.
         self.scaler.scale(loss_sum / total_valid_tokens).backward()
 
         if is_last_in_window:
@@ -129,7 +129,13 @@ class BaseTrainer:
             self.scheduler.step()
             self.global_step += 1
 
-        return loss_sum.item() / total_valid_tokens
+        # QUAN TRỌNG: giá trị LOG không được dùng total_valid_tokens (của cả
+        # cửa sổ) làm mẫu số — loss_sum ở đây chỉ là tổng loss của MICRO-BATCH
+        # này, nếu chia cho token của cả window sẽ bị chia nhỏ sai lệch
+        # khoảng `grad_accum` lần. Phải dùng đúng số token hợp lệ của CHÍNH
+        # micro-batch này để ra loss trung bình per-token thực tế.
+        num_tokens_this_batch = max((labels != -100).sum().item(), 1)
+        return loss_sum.item() / num_tokens_this_batch
 
     def _run_accum_window(self, batches: list) -> None:
         """Chạy trọn 1 cửa sổ gradient accumulation (N micro-batch → 1 optimizer step).
