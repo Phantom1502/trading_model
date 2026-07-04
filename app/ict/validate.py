@@ -6,14 +6,19 @@ dùng GPT (template engine deterministic, số liệu chèn trực tiếp từ f
 dict), KHÔNG CẦN bước "đối chiếu số liệu với GPT output" nữa — số liệu
 đúng theo construction, đã được test trong test_render.py.
 
+Key trong <eval> đã RÚT GỌN (xem render.py docstring để biết bảng viết
+tắt đầy đủ) — validate.py parse theo đúng key rút gọn này: tiền tố nhiều
+event là "E" (không phải "EVENT"), định danh event dùng "T"+"C" (không
+phải "TYPE"+"CANDLE").
+
 2 nhóm validate còn giữ lại — vẫn CÓ THỂ xảy ra do bug trong chính
 template/logic render (không phải do GPT):
 
     validate_cross_consistency(samples_same_chart)
         Đối chiếu field giữa mẫu đơn (Swept/FVG/Shift) và mẫu Tổng hợp
         PHẢI khớp 100% CHO CÙNG 1 EVENT. Định danh 1 event bằng cặp
-        (TYPE, CANDLE) — nếu event đó xuất hiện ở nhiều mẫu, mọi field
-        chung (SWING_LEVEL, DEPTH, GAP_SIZE...) phải giống hệt nhau.
+        (T, C) — nếu event đó xuất hiện ở nhiều mẫu, mọi field chung
+        (SL, D, GS...) phải giống hệt nhau.
 
     validate_no_leakage(sample)
         Xóa phần [3. LÝ GIẢI], thử tái dựng câu chuyện CHỈ từ phần
@@ -49,20 +54,18 @@ def _parse_eval_events(eval_block: str) -> List[Dict[str, str]]:
     """
     Parse eval thành LIST các dict, mỗi dict = 1 event riêng biệt.
 
-    N==1 (không có tiền tố EVENTk_) -> list 1 phần tử.
-    N>1 (có tiền tố EVENT1_/EVENT2_/...) -> tách theo từng số thứ tự,
-    field "SEQUENCE" (nếu có, chỉ xuất hiện ở mẫu Tổng hợp N>=2) KHÔNG
-    phải 1 event, tự động bị loại khỏi kết quả.
+    N==1 (không có tiền tố Ek_) -> list 1 phần tử.
+    N>1 (có tiền tố E1_/E2_/...) -> tách theo từng số thứ tự.
     """
     flat = _parse_eval(eval_block)
     grouped: Dict[int, Dict[str, str]] = defaultdict(dict)
     unprefixed: Dict[str, str] = {}
 
     for k, v in flat.items():
-        m = re.match(r"^EVENT(\d+)_(.+)$", k)
+        m = re.match(r"^E(\d+)_(.+)$", k)
         if m:
             grouped[int(m.group(1))][m.group(2)] = v
-        elif k != "SEQUENCE":
+        else:
             unprefixed[k] = v
 
     if grouped:
@@ -71,9 +74,9 @@ def _parse_eval_events(eval_block: str) -> List[Dict[str, str]]:
 
 
 def _event_identity(event: Dict[str, str]) -> Optional[tuple]:
-    """Định danh 1 event bằng (TYPE, CANDLE) — None nếu thiếu 1 trong 2 field."""
-    if "TYPE" in event and "CANDLE" in event:
-        return (event["TYPE"], event["CANDLE"])
+    """Định danh 1 event bằng (T, C) — None nếu thiếu 1 trong 2 field."""
+    if "T" in event and "C" in event:
+        return (event["T"], event["C"])
     return None
 
 

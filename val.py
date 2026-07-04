@@ -66,13 +66,11 @@ def _parse_text_to_sample(text: str) -> Optional[Dict[str, str]]:
 
 def _infer_sample_type(eval_block: str) -> str:
     """Suy loại mẫu từ field đặc trưng trong eval — không cần cột riêng."""
-    if "SEQUENCE=" in eval_block:
-        return "synthesis"
-    if "GAP_SIZE=" in eval_block:
+    if "GS=" in eval_block:
         return "fvg"
-    if "BROKEN=" in eval_block:
+    if "BR=" in eval_block:
         return "shift"
-    if "DEPTH=" in eval_block:
+    if "D=" in eval_block:
         return "swept"
     return "unknown"
 

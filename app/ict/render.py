@@ -10,12 +10,31 @@ Format 4 phần chuẩn (spec mục 5):
     [1. CHART]      raw_chart_text, giữ nguyên, không đổi
     [2. YÊU CẦU]     chọn ngẫu nhiên 1 trong nhiều cách diễn đạt câu hỏi
     [3. LÝ GIẢI]      văn xuôi từ template, co giãn độ dài theo số sự kiện
-    [4. CHẤM ĐIỂM]     block <eval>...</eval>, KEY=VALUE, EVENT1_/EVENT2_ nếu >1 event
+    [4. CHẤM ĐIỂM]     block <eval>...</eval>, KEY=VALUE, E1_/E2_ nếu >1 event
 
 QUY ƯỚC ĐÁNH SỐ NẾN: 1-based (nến đầu tiên = "nến 1"), khớp convention đã
 dùng trong candle_parser.py (`ordinal = i + 1`). Index trong fact dict
 (swept_candle_idx, fvg_candle_idx, shift_candle_idx, swing_idx) đều là
 0-based (index Python thật) — PHẢI +1 khi hiển thị trong text/eval.
+
+BẢNG VIẾT TẮT KEY TRONG <eval> (đã rút gọn để giảm token — tokenizer BPE
+nhỏ (~16k vocab, chủ yếu train tiếng Việt/code) không có sẵn token nguyên
+khối cho chuỗi ALLCAPS_GẠCH_DƯỚI hiếm gặp, phải tách nhỏ nhiều mảnh, cộng
+dồn đáng kể qua nhiều field/event. Xem README.md "Case study 3" để biết
+số liệu thật đã dẫn tới quyết định này):
+
+    Tiền tố nhiều event : EVENT -> E       (vd E1_, E2_)
+    TYPE                : T
+    CANDLE              : C
+    SWING_CANDLE        : SC
+    SWING_LEVEL         : SL
+    DEPTH               : D
+    GAP_LOW             : GL
+    GAP_HIGH            : GH
+    GAP_SIZE            : GS
+    FILL_PCT            : FP
+    DIRECTION           : DIR
+    BROKEN              : BR
 
 GIỚI HẠN PHẠM VI (v1, CHƯA quyết định, không tự ý làm):
     - Chart có 0 event (không phát hiện Swept/FVG/Shift nào) -> HIỆN TẠI
@@ -23,10 +42,22 @@ GIỚI HẠN PHẠM VI (v1, CHƯA quyết định, không tự ý làm):
       là data âm (negative example) hữu ích cho training, nhưng là quyết
       định domain cần bàn riêng trước khi thêm — không tự ý sinh loại mẫu
       này.
-    - Định dạng chuỗi SEQUENCE trong eval của mẫu Tổng hợp là lựa chọn
-      implementation của module này (không phải hằng số cứng từ spec) —
-      xem docstring _build_sequence_field() để biết chi tiết, có thể đổi
-      nếu cần format khác dễ parse hơn.
+
+MẪU TỔNG HỢP — KHÔNG còn field SEQUENCE (đã bỏ, xem quyết định dưới):
+    Trước đây có field SEQUENCE riêng mã hoá quan hệ thứ tự giữa các event.
+    ĐÃ BỎ vì dư thừa: field C (CANDLE) đã có sẵn trong TỪNG event, model có
+    thể tự so sánh 2 giá trị C để suy ra thứ tự thời gian mà không cần 1
+    field riêng liệt kê lại quan hệ đó — SEQUENCE chỉ thêm token mà không
+    thêm thông tin thật sự mới, ngoại trừ rule tie-break "Swept trước
+    Shift" khi trùng candle, và điều đó giờ được truyền đạt đơn giản hơn:
+    mẫu Tổng hợp SẮP XẾP event theo đúng thứ tự THỜI GIAN (candle_idx) khi
+    hiển thị (sort ổn định — 2 event cùng candle giữ nguyên thứ tự
+    Swept/FVG/Shift đã quyết định), nên thứ tự xuất hiện trong text tự nó
+    đã là tín hiệu thứ tự, không cần field phụ.
+
+    Hệ quả: render.py KHÔNG CÒN cần `facts["relations"]` cho bất kỳ việc
+    gì — toàn bộ logic remap index (từng cần để giữ SEQUENCE đúng sau khi
+    lọc top-K) cũng biến mất theo, code đơn giản hẳn.
 
 TOP-K CHO FVG (đã quyết định, dựa trên dữ liệu thật):
     Validate quy mô lớn (5.7M dòng, cửa sổ 20 nến) cho thấy mật độ FVG
@@ -42,10 +73,11 @@ TOP-K CHO FVG (đã quyết định, dựa trên dữ liệu thật):
     Kết hợp bằng RANK (không phải giá trị thô, vì 2 đại lượng khác đơn vị)
     — xem _select_top_k_fvg() để biết chi tiết thuật toán.
 
-    K=4 là giá trị mặc định BAN ĐẦU (chưa tối ưu bằng dữ liệu thật) — nên
-    regenerate 1 batch nhỏ + chạy lại stats_validate.py để xác nhận K này
-    đã đủ kéo tỷ lệ vượt ngân sách xuống mức chấp nhận được, điều chỉnh
-    nếu cần.
+    K=4 là giá trị mặc định BAN ĐẦU — đã xác nhận qua validate thật: FVG
+    đơn lẻ giờ 0% vượt max_seq (p50=450). Mẫu Tổng hợp VẪN còn vượt nhiều
+    (81.98% > 512, do cộng thêm Swept/Shift không lọc + field verbosity) —
+    đây là lý do trực tiếp dẫn tới quyết định bỏ SEQUENCE + rút gọn key ở
+    trên, xem README.md "Case study 3".
 """
 
 import random
@@ -156,6 +188,7 @@ _REQUEST_TEMPLATES = {
 
 # ══════════════════════════════════════════════════════════════════════
 # HELPER — field extraction (0-based -> 1-based), KHÔNG qua GPT
+# Key đã RÚT GỌN — xem bảng viết tắt ở docstring module.
 # ══════════════════════════════════════════════════════════════════════
 
 def _n(idx0: int) -> int:
@@ -165,33 +198,33 @@ def _n(idx0: int) -> int:
 
 def _swept_fields(e: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "TYPE"       : e["type"],
-        "CANDLE"     : _n(e["swept_candle_idx"]),
-        "SWING_CANDLE": _n(e["swing_idx"]),
-        "SWING_LEVEL": e["swing_level"],
-        "DEPTH"      : e["depth"],
+        "T" : e["type"],
+        "C" : _n(e["swept_candle_idx"]),
+        "SC": _n(e["swing_idx"]),
+        "SL": e["swing_level"],
+        "D" : e["depth"],
     }
 
 
 def _fvg_fields(e: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "TYPE"    : e["type"],
-        "CANDLE"  : _n(e["fvg_candle_idx"]),
-        "GAP_LOW" : e["gap_low"],
-        "GAP_HIGH": e["gap_high"],
-        "GAP_SIZE": e["gap_size_bins"],
-        "FILL_PCT": e["fill_pct"],
+        "T" : e["type"],
+        "C" : _n(e["fvg_candle_idx"]),
+        "GL": e["gap_low"],
+        "GH": e["gap_high"],
+        "GS": e["gap_size_bins"],
+        "FP": e["fill_pct"],
     }
 
 
 def _shift_fields(e: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "TYPE"        : e["type"],
-        "DIRECTION"   : e["direction"],
-        "CANDLE"      : _n(e["shift_candle_idx"]),
-        "SWING_CANDLE": _n(e["swing_idx"]),
-        "SWING_LEVEL" : e["swing_level"],
-        "BROKEN"      : e["broken_type"],
+        "T"  : e["type"],
+        "DIR": e["direction"],
+        "C"  : _n(e["shift_candle_idx"]),
+        "SC" : _n(e["swing_idx"]),
+        "SL" : e["swing_level"],
+        "BR" : e["broken_type"],
     }
 
 
@@ -209,13 +242,13 @@ def _sentence_for_event(e: Dict[str, Any], use_short: bool, rng: random.Random) 
 
     if "swept_candle_idx" in e:
         f = _swept_fields(e)
-        return template.format(c=f["CANDLE"], s=f["SWING_CANDLE"], level=f["SWING_LEVEL"], depth=f["DEPTH"])
+        return template.format(c=f["C"], s=f["SC"], level=f["SL"], depth=f["D"])
     if "fvg_candle_idx" in e:
         f = _fvg_fields(e)
-        return template.format(c=f["CANDLE"], size=f["GAP_SIZE"], fill=f["FILL_PCT"])
+        return template.format(c=f["C"], size=f["GS"], fill=f["FP"])
     if "shift_candle_idx" in e:
         f = _shift_fields(e)
-        return template.format(c=f["CANDLE"], s=f["SWING_CANDLE"], level=f["SWING_LEVEL"], dir=f["DIRECTION"])
+        return template.format(c=f["C"], s=f["SC"], level=f["SL"], dir=f["DIR"])
     raise KeyError(f"Event không xác định được loại: {e}")
 
 
@@ -232,8 +265,8 @@ def _fields_for_event(e: Dict[str, Any]) -> Dict[str, Any]:
 def _build_eval_block(events: List[Dict[str, Any]]) -> str:
     """
     Ghép field của N event thành block <eval>...</eval>, KEY=VALUE cách
-    nhau bằng space (spec mục 5). N==1 -> field KHÔNG đánh số (TYPE=...).
-    N>1 -> đánh số EVENT1_/EVENT2_/... theo đúng thứ tự trong `events`.
+    nhau bằng space (spec mục 5). N==1 -> field KHÔNG đánh số (T=...).
+    N>1 -> đánh số E1_/E2_/... theo đúng thứ tự trong `events`.
     """
     if len(events) == 1:
         fields = _fields_for_event(events[0])
@@ -242,73 +275,17 @@ def _build_eval_block(events: List[Dict[str, Any]]) -> str:
         parts = []
         for i, e in enumerate(events, start=1):
             fields = _fields_for_event(e)
-            parts.extend(f"EVENT{i}_{k}={v}" for k, v in fields.items())
+            parts.extend(f"E{i}_{k}={v}" for k, v in fields.items())
     return "<eval>" + " ".join(parts) + "</eval>"
 
 
 def _raw_candle_idx(e: Dict[str, Any]) -> int:
     """Lấy candle_idx GỐC (0-based) của 1 event — dùng để sắp xếp theo thời
-    gian, KHÔNG dùng field CANDLE đã +1 (chỉ để hiển thị)."""
+    gian, KHÔNG dùng field C đã +1 (chỉ để hiển thị)."""
     for key in ("swept_candle_idx", "fvg_candle_idx", "shift_candle_idx"):
         if key in e:
             return e[key]
     raise KeyError(f"Event không xác định được candle_idx: {e}")
-
-
-def _build_sequence_field(events: List[Dict[str, Any]], relations: List[Dict[str, Any]]) -> Optional[str]:
-    """
-    Mã hoá "chuỗi trigger sự kiện" — CHỈ cặp LIỀN KỀ theo thời gian thực tế
-    (candle_idx), KHÔNG PHẢI toàn bộ C(n,2) cặp tổ hợp. Với N event, tạo ra
-    N-1 cặp (event 1 -> event 2 -> event 3 -> ...), giảm từ O(n²) xuống
-    O(n) — quan trọng vì SEQUENCE kiểu tổ hợp đầy đủ vừa tốn token vô ích
-    (nhiều cặp event cách xa nhau, không liên quan trực tiếp), vừa không
-    đúng ý nghĩa "chuỗi trigger" (điều gì xảy ra NGAY SAU điều gì).
-
-    Nếu <2 event, không có cặp nào, trả về None.
-
-    ĐỊNH DẠNG (lựa chọn implementation, không phải hằng số cứng từ spec):
-        "1<2,2~3,3<4"
-    Số là thứ tự event (1-based, khớp EVENT1/EVENT2 trong eval — GIỮ
-    NGUYÊN thứ tự gốc trong `events`, KHÔNG sắp xếp lại), "<" nghĩa là bên
-    trái xảy ra TRƯỚC, "~" là SAME_CANDLE (chưa quyết định, vd có FVG tham
-    gia — xem relations.py).
-    """
-    if len(events) < 2:
-        return None
-
-    # Sắp xếp CHỈ SỐ GỐC (0-based trong `events`) theo candle_idx thời gian
-    # thực — dùng sort ỔN ĐỊNH (stable) để 2 event cùng candle_idx giữ
-    # nguyên thứ tự xuất hiện gốc trong `events` (Swept trước FVG trước
-    # Shift, do facts.py ghép all_events = swept+fvg+shift) — TRÙNG HỢP
-    # khớp đúng rule đã quyết định (Swept trước Shift), nhưng case có FVG
-    # tham gia tie vẫn chỉ là artifact thứ tự list, KHÔNG PHẢI quyết định
-    # có chủ đích (xem relations.py để biết rule thật đã chốt phần nào).
-    time_order = sorted(range(len(events)), key=lambda i: _raw_candle_idx(events[i]))
-
-    # Tra cứu nhanh order/tie giữa 2 chỉ số gốc bất kỳ từ relations đã có
-    relation_lookup = {}
-    for r in relations:
-        relation_lookup[frozenset((r["event_a_idx"], r["event_b_idx"]))] = r
-
-    parts = []
-    for k in range(len(time_order) - 1):
-        orig_a, orig_b = time_order[k], time_order[k + 1]
-        r = relation_lookup.get(frozenset((orig_a, orig_b)))
-        a_num, b_num = orig_a + 1, orig_b + 1   # 1-based khớp EVENT1/EVENT2
-
-        if r is None:
-            # Không tìm thấy relation tương ứng (không nên xảy ra nếu
-            # `relations` được tính đúng từ chính `events`) — fallback an
-            # toàn theo thứ tự candle_idx đã sort, không suy đoán tie.
-            parts.append(f"{a_num}<{b_num}")
-        elif r["order"] == "A_BEFORE_B":
-            parts.append(f"{a_num}<{b_num}" if r["event_a_idx"] == orig_a else f"{b_num}<{a_num}")
-        elif r["order"] == "B_BEFORE_A":
-            parts.append(f"{b_num}<{a_num}" if r["event_a_idx"] == orig_a else f"{a_num}<{b_num}")
-        else:
-            parts.append(f"{a_num}~{b_num}")
-
-    return "SEQUENCE=" + ",".join(parts) if parts else None
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -340,8 +317,8 @@ def _select_top_k_fvg(
     giữa 2 đại lượng khác đơn vị (giá tính bin, thời gian tính số nến).
 
     Trả về (list event đã lọc, list index GỐC trong fvg_events tương ứng)
-    — trả kèm index để caller (render_synthesis_sample) remap relations
-    chính xác, không phải tra cứu lại bằng .index() dễ vỡ nếu có event
+    — trả kèm index để caller (render_synthesis_sample) biết chính xác vị
+    trí gốc nếu cần, tránh tra cứu lại bằng .index() dễ vỡ nếu có event
     trùng giá trị (dict so sánh bằng value, không phải identity).
 
     Nếu len(fvg_events) <= k, trả về NGUYÊN VẸN (không cắt, không rank).
@@ -437,47 +414,36 @@ def render_shift_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Optional
 
 def render_synthesis_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Optional[random.Random] = None) -> Optional[Dict[str, Any]]:
     """
-    Dạng 4: nói về CẢ 3 loại + quan hệ thứ tự (Tầng 2, field SEQUENCE).
+    Dạng 4: nói về CẢ 3 loại. KHÔNG CÒN field SEQUENCE (đã bỏ, xem docstring
+    module) — thứ tự thời gian truyền đạt bằng cách SẮP XẾP event theo
+    candle_idx trước khi hiển thị (sort ổn định giữ đúng rule Swept-trước-
+    Shift khi trùng candle, vì list gốc đã theo thứ tự swept+fvg+shift).
 
     Áp dụng FVG_TOP_K cho phần FVG (giống render_fvg_sample) — Swept/Shift
     KHÔNG lọc (dữ liệu thật xác nhận không cần, xem docstring module).
 
-    Thứ tự event trong `events` khớp ĐÚNG cách facts.build_facts() ghép
-    all_events (swept + fvg + shift) TRƯỚC KHI lọc -> để tra cứu đúng
-    facts["relations"] gốc, sau đó REMAP index sang danh sách đã lọc.
+    KHÔNG CÒN cần facts["relations"] — đã bỏ cùng với SEQUENCE, code đơn
+    giản hơn nhiều so với bản trước (không cần remap index sau khi lọc).
     """
     rng = rng or random
     swept_events = fact["swept"]
     all_fvg = fact["fvg"]
     shift_events = fact["shift"]
 
-    all_events_before_filter = swept_events + all_fvg + shift_events
-    if not all_events_before_filter:
+    total_count = len(swept_events) + len(all_fvg) + len(shift_events)
+    if total_count == 0:
         return None   # v1: SKIP khi chart hoàn toàn không có event nào (xem docstring module)
 
-    selected_fvg, fvg_local_indices = _select_top_k_fvg(all_fvg, raw_chart_text)
+    selected_fvg, _ = _select_top_k_fvg(all_fvg, raw_chart_text)
 
-    # Chỉ số GỐC (trong all_events_before_filter) của các event ĐƯỢC GIỮ —
-    # cần để remap facts["relations"] (được tính trên list CHƯA lọc)
-    n_swept = len(swept_events)
-    fvg_keep_original_indices = [n_swept + i for i in fvg_local_indices]
-    keep_original_indices = (
-        list(range(n_swept))                                                    # toàn bộ Swept
-        + fvg_keep_original_indices                                              # FVG đã lọc
-        + list(range(n_swept + len(all_fvg), n_swept + len(all_fvg) + len(shift_events)))  # toàn bộ Shift
+    # Sắp xếp theo THỜI GIAN (candle_idx) — sort ổn định nên 2 event cùng
+    # candle_idx giữ nguyên thứ tự tương đối gốc (Swept trước FVG trước
+    # Shift, do nối list theo thứ tự đó trước khi sort) -> tự động khớp
+    # đúng rule đã quyết định (Swept trước Shift) mà KHÔNG cần field riêng.
+    events = sorted(
+        swept_events + selected_fvg + shift_events,
+        key=_raw_candle_idx,
     )
-
-    events = [all_events_before_filter[i] for i in keep_original_indices]
-
-    old_to_new = {orig: new for new, orig in enumerate(keep_original_indices)}
-    filtered_relations = []
-    for r in fact["relations"]:
-        a, b = r["event_a_idx"], r["event_b_idx"]
-        if a in old_to_new and b in old_to_new:
-            remapped = dict(r)
-            remapped["event_a_idx"] = old_to_new[a]
-            remapped["event_b_idx"] = old_to_new[b]
-            filtered_relations.append(remapped)
 
     use_short = len(events) >= 3
     sentences = [_sentence_for_event(e, use_short, rng) for e in events]
@@ -485,11 +451,6 @@ def render_synthesis_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Opti
 
     request = rng.choice(_REQUEST_TEMPLATES["synthesis"])
     eval_block = _build_eval_block(events)
-
-    sequence_field = _build_sequence_field(events, filtered_relations)
-    if sequence_field:
-        # Chèn SEQUENCE vào trong block <eval>...</eval>, trước dấu đóng
-        eval_block = eval_block[:-len("</eval>")] + " " + sequence_field + "</eval>"
 
     text = f"{raw_chart_text}\n{request}\n{explanation}\n{eval_block}"
 
@@ -500,7 +461,7 @@ def render_synthesis_sample(fact: Dict[str, Any], raw_chart_text: str, rng: Opti
         "eval"             : eval_block,
         "text"             : text,
         "event_count"      : len(events),
-        "total_event_count": len(all_events_before_filter),
+        "total_event_count": total_count,
     }
 
 

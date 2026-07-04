@@ -5,6 +5,12 @@ Trọng tâm test: số liệu trong eval/explanation PHẢI khớp CHÍNH XÁC 
 fact dict gốc (đảm bảo string interpolation không sai lệch, không hallucinate
 — vì đây chính là lý do bỏ GPT). Dùng random.Random(seed) để test
 deterministic, không phụ thuộc random module global.
+
+Key trong <eval> đã RÚT GỌN (xem render.py docstring để biết bảng viết
+tắt đầy đủ): EVENT->E, TYPE->T, CANDLE->C, SWING_CANDLE->SC,
+SWING_LEVEL->SL, DEPTH->D, GAP_LOW->GL, GAP_HIGH->GH, GAP_SIZE->GS,
+FILL_PCT->FP, DIRECTION->DIR, BROKEN->BR. Field SEQUENCE đã BỊ BỎ (thứ tự
+thời gian giờ truyền đạt qua thứ tự xuất hiện + field C, xem render.py).
 """
 
 import random
@@ -78,8 +84,23 @@ def _two_fvg_chart():
     ]
 
 
+def _many_fvg_chart():
+    """7 FVG rõ ràng (>FVG_TOP_K=4), tách biệt hoàn toàn theo nhóm base giá cách xa."""
+    candles = []
+    for k in range(3):
+        base = 1000 + k * 300
+        candles += [
+            _c(base, base + 10, base - 5, base + 5),
+            _c(base + 15, base + 25, base + 12, base + 20),
+            _c(base + 30, base + 40, base + 25, base + 35),
+            _c(base + 20, base + 24, base + 10, base + 15),
+            _c(base + 15, base + 30, base + 5, base + 20),
+        ]
+    return candles
+
+
 # ══════════════════════════════════════════════════════════════════════
-# Số liệu khớp CHÍNH XÁC fact dict
+# Số liệu khớp CHÍNH XÁC fact dict (key đã rút gọn: T/C/SC/SL/D/GL/GH/GS/FP/DIR/BR)
 # ══════════════════════════════════════════════════════════════════════
 
 def test_clear_swept_sample_numbers_match_fact_exactly():
@@ -93,11 +114,11 @@ def test_clear_swept_sample_numbers_match_fact_exactly():
 
     e = facts["swept"][0]
     fields = dict(re.findall(r"(\w+)=([\w.\-]+)", sample["eval"]))
-    assert fields["TYPE"] == e["type"]
-    assert int(fields["CANDLE"]) == e["swept_candle_idx"] + 1   # 1-based
-    assert int(fields["SWING_CANDLE"]) == e["swing_idx"] + 1
-    assert int(fields["SWING_LEVEL"]) == e["swing_level"]
-    assert int(fields["DEPTH"]) == e["depth"]
+    assert fields["T"] == e["type"]
+    assert int(fields["C"]) == e["swept_candle_idx"] + 1   # 1-based
+    assert int(fields["SC"]) == e["swing_idx"] + 1
+    assert int(fields["SL"]) == e["swing_level"]
+    assert int(fields["D"]) == e["depth"]
 
 
 def test_clear_fvg_sample_numbers_match_fact_exactly():
@@ -109,12 +130,12 @@ def test_clear_fvg_sample_numbers_match_fact_exactly():
 
     e = facts["fvg"][0]
     fields = dict(re.findall(r"(\w+)=([\w.\-]+)", sample["eval"]))
-    assert fields["TYPE"] == e["type"]
-    assert int(fields["CANDLE"]) == e["fvg_candle_idx"] + 1
-    assert int(fields["GAP_LOW"]) == e["gap_low"]
-    assert int(fields["GAP_HIGH"]) == e["gap_high"]
-    assert int(fields["GAP_SIZE"]) == e["gap_size_bins"]
-    assert float(fields["FILL_PCT"]) == e["fill_pct"]
+    assert fields["T"] == e["type"]
+    assert int(fields["C"]) == e["fvg_candle_idx"] + 1
+    assert int(fields["GL"]) == e["gap_low"]
+    assert int(fields["GH"]) == e["gap_high"]
+    assert int(fields["GS"]) == e["gap_size_bins"]
+    assert float(fields["FP"]) == e["fill_pct"]
 
 
 def test_clear_shift_sample_numbers_match_fact_exactly():
@@ -126,12 +147,12 @@ def test_clear_shift_sample_numbers_match_fact_exactly():
 
     e = facts["shift"][0]
     fields = dict(re.findall(r"(\w+)=([\w.\-]+)", sample["eval"]))
-    assert fields["TYPE"] == e["type"]
-    assert fields["DIRECTION"] == e["direction"]
-    assert int(fields["CANDLE"]) == e["shift_candle_idx"] + 1
-    assert int(fields["SWING_CANDLE"]) == e["swing_idx"] + 1
-    assert int(fields["SWING_LEVEL"]) == e["swing_level"]
-    assert fields["BROKEN"] == e["broken_type"]
+    assert fields["T"] == e["type"]
+    assert fields["DIR"] == e["direction"]
+    assert int(fields["C"]) == e["shift_candle_idx"] + 1
+    assert int(fields["SC"]) == e["swing_idx"] + 1
+    assert int(fields["SL"]) == e["swing_level"]
+    assert fields["BR"] == e["broken_type"]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -149,25 +170,25 @@ def test_clear_chart_block_unchanged():
 
 
 def test_clear_single_event_no_numbering():
-    """N==1 event -> field KHÔNG đánh số EVENT1_ (theo spec mục 4: chỉ đánh
+    """N==1 event -> field KHÔNG đánh số E1_ (theo spec mục 4: chỉ đánh
     số khi nhiều sự kiện)."""
     facts, raw = _build_facts_and_raw(_single_shift_chart())
     rng = random.Random(7)
     sample = render_shift_sample(facts, raw, rng=rng)
     assert len(facts["shift"]) == 1
-    assert "EVENT1_" not in sample["eval"]
-    assert "TYPE=" in sample["eval"]
+    assert "E1_" not in sample["eval"]
+    assert "T=" in sample["eval"]
 
 
 def test_boundary_multiple_events_use_numbering():
-    """N>1 event cùng loại -> field PHẢI đánh số EVENT1_/EVENT2_."""
+    """N>1 event cùng loại -> field PHẢI đánh số E1_/E2_."""
     facts, raw = _build_facts_and_raw(_two_fvg_chart())
     assert len(facts["fvg"]) >= 2
 
     rng = random.Random(3)
     sample = render_fvg_sample(facts, raw, rng=rng)
-    assert "EVENT1_TYPE=" in sample["eval"]
-    assert "EVENT2_TYPE=" in sample["eval"]
+    assert "E1_T=" in sample["eval"]
+    assert "E2_T=" in sample["eval"]
 
 
 def test_clear_short_template_used_for_3plus_events():
@@ -184,18 +205,16 @@ def test_clear_short_template_used_for_3plus_events():
 
 
 # ══════════════════════════════════════════════════════════════════════
-# Mẫu Tổng hợp
+# Mẫu Tổng hợp — KHÔNG CÒN SEQUENCE, thứ tự truyền đạt qua sắp xếp + field C
 # ══════════════════════════════════════════════════════════════════════
 
-def test_clear_synthesis_includes_sequence_when_multiple_events():
-    """Mẫu Tổng hợp có >=2 event -> eval PHẢI có field SEQUENCE."""
+def test_clear_synthesis_no_sequence_field():
+    """Mẫu Tổng hợp KHÔNG CÒN field SEQUENCE (đã bỏ theo quyết định mới)."""
     facts, raw = _build_facts_and_raw(_multi_event_chart())
     rng = random.Random(9)
     sample = render_synthesis_sample(facts, raw, rng=rng)
     assert sample is not None
-    total_events = len(facts["swept"]) + len(facts["fvg"]) + len(facts["shift"])
-    assert total_events >= 2
-    assert "SEQUENCE=" in sample["eval"]
+    assert "SEQUENCE" not in sample["eval"]
 
 
 def test_clear_synthesis_event_count_matches_all_types():
@@ -209,19 +228,18 @@ def test_clear_synthesis_event_count_matches_all_types():
     assert sample["total_event_count"] == expected   # không lọc -> 2 field bằng nhau
 
 
-def _many_fvg_chart():
-    """7 FVG rõ ràng (>FVG_TOP_K=4), tách biệt hoàn toàn theo nhóm base giá cách xa."""
-    candles = []
-    for k in range(3):
-        base = 1000 + k * 300
-        candles += [
-            _c(base, base + 10, base - 5, base + 5),
-            _c(base + 15, base + 25, base + 12, base + 20),
-            _c(base + 30, base + 40, base + 25, base + 35),
-            _c(base + 20, base + 24, base + 10, base + 15),
-            _c(base + 15, base + 30, base + 5, base + 20),
-        ]
-    return candles
+def test_clear_synthesis_events_ordered_chronologically():
+    """Field C (candle) của các event trong eval PHẢI xuất hiện theo thứ tự
+    TĂNG DẦN — xác nhận render_synthesis_sample sắp xếp theo thời gian
+    thay vì giữ nguyên thứ tự gộp swept+fvg+shift (thay thế cho SEQUENCE
+    đã bỏ: model tự suy thứ tự từ vị trí xuất hiện + giá trị C)."""
+    facts, raw = _build_facts_and_raw(_multi_event_chart())
+    rng = random.Random(11)
+    sample = render_synthesis_sample(facts, raw, rng=rng)
+
+    # Lấy field C theo ĐÚNG THỨ TỰ xuất hiện trong eval (không phải sort lại)
+    candles_in_order = [int(x) for x in re.findall(r"(?:^|_)C=(\d+)", sample["eval"])]
+    assert candles_in_order == sorted(candles_in_order)
 
 
 def test_boundary_fvg_top_k_reduces_event_count():
@@ -247,14 +265,13 @@ def test_clear_fvg_top_k_keeps_chronological_order():
     rng = random.Random(1)
     sample = render_fvg_sample(facts, raw, rng=rng)
 
-    import re
-    candles_mentioned = [int(x) for x in re.findall(r"CANDLE=(\d+)", sample["eval"])]
+    candles_mentioned = [int(x) for x in re.findall(r"(?:^|_)C=(\d+)", sample["eval"])]
     assert candles_mentioned == sorted(candles_mentioned)   # tăng dần -> đúng thứ tự thời gian
 
 
-def test_clear_synthesis_top_k_and_relations_remap_correctly():
+def test_clear_synthesis_top_k_reduces_correctly():
     """Mẫu Tổng hợp với chart nhiều FVG -> event_count < total_event_count,
-    và SEQUENCE vẫn hợp lệ (không lỗi index sau khi remap relations)."""
+    KHÔNG lỗi gì (không còn cần remap relations vì đã bỏ SEQUENCE)."""
     from app.ict.render import FVG_TOP_K
 
     facts, raw = _build_facts_and_raw(_many_fvg_chart())
@@ -268,64 +285,9 @@ def test_clear_synthesis_top_k_and_relations_remap_correctly():
     assert sample["total_event_count"] == expected_total
     assert sample["event_count"] < sample["total_event_count"]
 
-    # SEQUENCE vẫn phải hợp lệ: đúng N-1 cặp theo N đã lọc (không phải N gốc)
-    import re
-    seq_match = re.search(r"SEQUENCE=([\d<~,]+)(?=</eval>)", sample["eval"])
-    assert seq_match is not None
-    pairs = len(seq_match.group(1).split(","))
-    assert pairs == expected_kept - 1   # N-1 theo N ĐÃ LỌC, không phải N gốc
-
     # validate_no_leakage vẫn phải pass sau khi lọc (không có số liệu rác sót lại)
     from app.ict.validate import validate_no_leakage
     assert validate_no_leakage(sample) is True
-
-
-def test_clear_sequence_is_linear_not_quadratic():
-    """SEQUENCE PHẢI có đúng N-1 cặp (liền kề theo thời gian), KHÔNG PHẢI
-    C(N,2) cặp tổ hợp đầy đủ — đây là fix quan trọng giảm token cho chart
-    nhiều event (vd cửa sổ 29 nến từng phát sinh mẫu >1000 token)."""
-    facts, raw = _build_facts_and_raw(_multi_event_chart())
-    rng = random.Random(11)
-    sample = render_synthesis_sample(facts, raw, rng=rng)
-
-    n = sample["event_count"]
-    assert n >= 4   # chart mẫu có 7 event — đủ để phân biệt O(n) vs O(n²)
-
-    seq_match = re.search(r"SEQUENCE=([\d<~,]+)(?=</eval>)", sample["eval"])
-    assert seq_match is not None
-    pairs = len(seq_match.group(1).split(","))
-
-    assert pairs == n - 1   # O(n): đúng N-1 cặp liền kề
-    assert pairs != n * (n - 1) // 2   # KHÔNG PHẢI C(n,2) — xác nhận đã fix, không phải trùng hợp
-
-
-def test_clear_sequence_pairs_are_chronologically_adjacent():
-    """Mỗi cặp trong SEQUENCE phải là 2 event LIỀN KỀ theo candle_idx thời
-    gian thực tế (không phải liền kề theo thứ tự list gốc swept+fvg+shift)."""
-    facts, raw = _build_facts_and_raw(_multi_event_chart())
-    rng = random.Random(11)
-    sample = render_synthesis_sample(facts, raw, rng=rng)
-
-    events = facts["swept"] + facts["fvg"] + facts["shift"]
-    candle_indices = []
-    for e in events:
-        for key in ("swept_candle_idx", "fvg_candle_idx", "shift_candle_idx"):
-            if key in e:
-                candle_indices.append(e[key])
-                break
-    time_sorted_order = sorted(range(len(events)), key=lambda i: candle_indices[i])
-    expected_adjacent_pairs = {
-        frozenset((time_sorted_order[k] + 1, time_sorted_order[k + 1] + 1))
-        for k in range(len(time_sorted_order) - 1)
-    }
-
-    seq_match = re.search(r"SEQUENCE=([\d<~,]+)(?=</eval>)", sample["eval"])
-    actual_pairs = set()
-    for token in seq_match.group(1).split(","):
-        a, sep, b = re.split(r"([<~])", token)
-        actual_pairs.add(frozenset((int(a), int(b))))
-
-    assert actual_pairs == expected_adjacent_pairs
 
 
 # ══════════════════════════════════════════════════════════════════════

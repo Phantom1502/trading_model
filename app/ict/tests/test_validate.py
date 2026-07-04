@@ -38,8 +38,8 @@ def _build_facts_and_raw(candles, initial_trend="BULL"):
 
 def test_clear_parse_eval_basic():
     """_parse_eval() tách đúng KEY=VALUE từ block <eval>...</eval>."""
-    fields = _parse_eval("<eval>TYPE=BULL CANDLE=3 GAP_SIZE=15</eval>")
-    assert fields == {"TYPE": "BULL", "CANDLE": "3", "GAP_SIZE": "15"}
+    fields = _parse_eval("<eval>T=BULL C=3 GS=15</eval>")
+    assert fields == {"T": "BULL", "C": "3", "GS": "15"}
 
 
 def test_clear_cross_consistency_passes_for_real_samples():
@@ -70,20 +70,20 @@ def test_clear_cross_consistency_single_sample_trivially_true():
 
 
 def test_near_miss_cross_consistency_catches_mismatch():
-    """Cố tình đưa vào 1 mẫu "giả" TRÙNG định danh (TYPE+CANDLE) với 1 event
-    thật, nhưng field khác (SWING_LEVEL) SAI giá trị -> validate PHẢI False."""
+    """Cố tình đưa vào 1 mẫu "giả" TRÙNG định danh (T+C) với 1 event
+    thật, nhưng field khác (SL) SAI giá trị -> validate PHẢI False."""
     facts, raw = _build_facts_and_raw(_multi_event_chart())
     rng = random.Random(1)
 
     sample_shift = render_shift_sample(facts, raw, rng=rng)
-    real_fields = _parse_eval(sample_shift["eval"])   # TYPE=BOS CANDLE=<thật>...
+    real_fields = _parse_eval(sample_shift["eval"])   # T=BOS C=<thật>...
 
     fake_synthesis = {
         "chart": raw,
         "request": "fake",
         "explanation": "fake",
-        # Cùng TYPE + CANDLE (cùng định danh event) nhưng SWING_LEVEL SAI
-        "eval": f"<eval>TYPE={real_fields['TYPE']} CANDLE={real_fields['CANDLE']} SWING_LEVEL=999999</eval>",
+        # Cùng T + C (cùng định danh event) nhưng SL SAI
+        "eval": f"<eval>T={real_fields['T']} C={real_fields['C']} SL=999999</eval>",
         "event_count": 1,
     }
     assert validate_cross_consistency([sample_shift, fake_synthesis]) is False
@@ -107,7 +107,7 @@ def test_near_miss_no_leakage_catches_extra_number():
         "chart": "<chart></chart>",
         "request": "fake",
         "explanation": "Nến thứ 999 có điều gì đó bất thường.",   # số 999 không có trong eval
-        "eval": "<eval>TYPE=BULL CANDLE=3</eval>",
+        "eval": "<eval>T=BULL C=3</eval>",
         "event_count": 1,
     }
     assert validate_no_leakage(fake_sample) is False
@@ -152,16 +152,16 @@ def test_clear_no_leakage_every_template_variant():
 
                 if "swept_candle_idx" in event:
                     f = _swept_fields(event)
-                    explanation = template.format(c=f["CANDLE"], s=f["SWING_CANDLE"], level=f["SWING_LEVEL"], depth=f["DEPTH"])
-                    eval_block = f"<eval>TYPE={f['TYPE']} CANDLE={f['CANDLE']} SWING_CANDLE={f['SWING_CANDLE']} SWING_LEVEL={f['SWING_LEVEL']} DEPTH={f['DEPTH']}</eval>"
+                    explanation = template.format(c=f["C"], s=f["SC"], level=f["SL"], depth=f["D"])
+                    eval_block = f"<eval>T={f['T']} C={f['C']} SC={f['SC']} SL={f['SL']} D={f['D']}</eval>"
                 elif "fvg_candle_idx" in event:
                     f = _fvg_fields(event)
-                    explanation = template.format(c=f["CANDLE"], size=f["GAP_SIZE"], fill=f["FILL_PCT"])
-                    eval_block = f"<eval>TYPE={f['TYPE']} CANDLE={f['CANDLE']} GAP_LOW={f['GAP_LOW']} GAP_HIGH={f['GAP_HIGH']} GAP_SIZE={f['GAP_SIZE']} FILL_PCT={f['FILL_PCT']}</eval>"
+                    explanation = template.format(c=f["C"], size=f["GS"], fill=f["FP"])
+                    eval_block = f"<eval>T={f['T']} C={f['C']} GL={f['GL']} GH={f['GH']} GS={f['GS']} FP={f['FP']}</eval>"
                 else:
                     f = _shift_fields(event)
-                    explanation = template.format(c=f["CANDLE"], s=f["SWING_CANDLE"], level=f["SWING_LEVEL"], dir=f["DIRECTION"])
-                    eval_block = f"<eval>TYPE={f['TYPE']} DIRECTION={f['DIRECTION']} CANDLE={f['CANDLE']} SWING_CANDLE={f['SWING_CANDLE']} SWING_LEVEL={f['SWING_LEVEL']} BROKEN={f['BROKEN']}</eval>"
+                    explanation = template.format(c=f["C"], s=f["SC"], level=f["SL"], dir=f["DIR"])
+                    eval_block = f"<eval>T={f['T']} DIR={f['DIR']} C={f['C']} SC={f['SC']} SL={f['SL']} BR={f['BR']}</eval>"
 
                 sample = {"explanation": explanation, "eval": eval_block}
                 if not validate_no_leakage(sample):
