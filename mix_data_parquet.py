@@ -19,11 +19,12 @@ PART_FLUSH_TOKENS = 50_000_000    # gom nhiều đợt interleave lại, đủ n
 
 CATEGORY_CONFIG = {
     "vi": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/vi/*.parquet")), "ratio": 0.2}, # 63GB
-    "wiki_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/wiki_en/*.parquet")), "ratio": 0.1}, # 6.7GB
+    "wiki_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/wiki_en/*.parquet")), "ratio": 0.15}, # 6.7GB
     "python": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/python/*.parquet")), "ratio": 0.25}, # 4GB
     "math": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/math/*.parquet")), "ratio": 0.15}, # 2.8GB
     "social_en": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/social_en/*.parquet")), "ratio": 0.1}, # 200GB
-    "trading": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/trading/*.parquet")), "ratio": 0.2}, # 1.5GB
+    "trading": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/trading/raw/*.parquet")), "ratio": 0.08}, # 1.5GB
+    "trading1": {"files": sorted(glob.glob("E:/LLM Dataset/Mix/trading/old/*.parquet")), "ratio": 0.07}, # 1.5GB
 }
 '''
 

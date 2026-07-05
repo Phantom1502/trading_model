@@ -14,9 +14,18 @@ dict sample, rồi chạy:
 Kèm 2 thống kê phụ hữu ích trước khi đưa data vào train:
     - Phân phối token_length (so với ngân sách ~400 token phần text đã
       tính trong spec mục 5).
-    - Tỷ lệ 4 dạng mẫu tin (Swept/FVG/Shift/Tổng hợp) — suy loại mẫu từ
-      field đặc trưng trong eval (DEPTH=/GAP_SIZE=/BROKEN=/SEQUENCE=),
-      KHÔNG cần cột riêng lưu sample_type trong parquet.
+    - Tỷ lệ 4 dạng mẫu tin (Swept/FVG/Shift/Tổng hợp).
+
+SUY LOẠI MẪU — ĐÃ SỬA (quan trọng): trước đây suy loại mẫu bằng cách tìm
+field đặc trưng trong eval (GAP_SIZE=/BROKEN=/DEPTH=/SEQUENCE=). Từ khi bỏ
+field SEQUENCE (xem README package, "Case study 3"), cách này KHÔNG CÒN
+TIN CẬY — 1 mẫu Tổng hợp chứa FVG event cũng sẽ có "GS=" y hệt mẫu FVG đơn
+lẻ, không còn tín hiệu độc quyền nào để phân biệt "đây là FVG đơn lẻ" hay
+"đây là Tổng hợp có chứa FVG" chỉ từ nội dung eval.
+
+Sửa bằng cách suy loại từ REQUEST thay vì eval — _REQUEST_TEMPLATES trong
+render.py là 1 tập CỐ ĐỊNH, ĐÓNG, nên match CHÍNH XÁC chuỗi request với
+tập này cho kết quả tin cậy tuyệt đối, không mơ hồ như đoán qua field.
 
 Cách dùng:
     python stats_validate.py --parquet data/ict_dataset.parquet
@@ -31,7 +40,19 @@ from typing import Optional, Dict, Any
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+
 from app.ict.validate import validate_cross_consistency, validate_no_leakage
+from app.ict.render import _REQUEST_TEMPLATES
+
+
+# Reverse lookup: chuỗi request CHÍNH XÁC -> loại mẫu — build 1 lần từ
+# chính _REQUEST_TEMPLATES của render.py (không hardcode lặp lại danh sách
+# ở đây, tự động đồng bộ nếu sau này template đổi/thêm biến thể mới).
+_REQUEST_TO_TYPE: Dict[str, str] = {
+    text: sample_type
+    for sample_type, texts in _REQUEST_TEMPLATES.items()
+    for text in texts
+}
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -64,15 +85,15 @@ def _parse_text_to_sample(text: str) -> Optional[Dict[str, str]]:
     return {"chart": chart, "request": request, "explanation": explanation, "eval": eval_block}
 
 
-def _infer_sample_type(eval_block: str) -> str:
-    """Suy loại mẫu từ field đặc trưng trong eval — không cần cột riêng."""
-    if "GS=" in eval_block:
-        return "fvg"
-    if "BR=" in eval_block:
-        return "shift"
-    if "D=" in eval_block:
-        return "swept"
-    return "unknown"
+def _infer_sample_type(request: str) -> str:
+    """
+    Suy loại mẫu từ REQUEST (không phải eval — xem lý do ở docstring module).
+    Match CHÍNH XÁC với 1 trong các chuỗi cố định trong _REQUEST_TEMPLATES.
+
+    "unknown" nếu request không khớp bất kỳ template nào đã biết — dấu hiệu
+    data cũ (render bằng version template khác) hoặc lỗi parse.
+    """
+    return _REQUEST_TO_TYPE.get(request, "unknown")
 
 
 def _parse_meta(raw_meta: Any) -> Dict[str, Any]:
@@ -119,23 +140,20 @@ def main():
     n_target = min(args.sample, total_rows) if args.sample else total_rows
     print(f"Đang xử lý {n_target:,} / {total_rows:,} dòng (streaming, batch={args.batch_size:,})...")
 
-    # ── Accumulators — KHÔNG giữ df gốc, KHÔNG giữ list toàn bộ row đã parse ──
     n_seen        = 0
     parse_fail    = 0
     leak_pass     = leak_fail = 0
     leak_fail_by_type   = defaultdict(int)
-    leak_fail_examples  = []            # tối đa 5 phần tử — không đáng kể
+    leak_fail_examples  = []
     type_counts   = defaultdict(int)
-    type_lengths  = defaultdict(list)   # chỉ float, nhẹ hơn nhiều so với giữ cả sample
+    type_lengths  = defaultdict(list)
     all_lengths   = []
 
-    # groups: key -> list sample. Đây là phần DUY NHẤT buộc phải giữ tới cuối
-    # (cần so sánh các mẫu CÙNG 1 chart gốc, có thể rơi vào batch khác nhau).
     groups = defaultdict(list)
 
     stop = False
     for batch in pf.iter_batches(batch_size=args.batch_size, columns=needed_cols):
-        bd = batch.to_pydict()   # list Python thuần — không tạo Series/Index per-row như iterrows()
+        bd = batch.to_pydict()
         n_batch = len(bd[args.text_col])
         tl_col  = bd[args.token_length_col] if has_token_len else [None] * n_batch
 
@@ -152,7 +170,7 @@ def main():
 
             meta = _parse_meta(bd[args.meta_col][i])
             key  = _group_key(meta)
-            typ  = _infer_sample_type(sample["eval"])
+            typ  = _infer_sample_type(sample["request"])
             tl   = tl_col[i]
 
             type_counts[typ] += 1
@@ -171,7 +189,7 @@ def main():
 
             groups[key].append(sample)
 
-        del bd, batch   # giải phóng ngay, không đợi tới cuối hàm
+        del bd, batch
         if stop:
             break
 
@@ -185,6 +203,12 @@ def main():
         print("\n⚠ Không có dòng nào parse được — kiểm tra lại --text-col hoặc format text.")
         return
 
+    if type_counts.get("unknown", 0) > 0:
+        pct = type_counts["unknown"] / total_parsed * 100
+        print(f"\n  ⚠ {type_counts['unknown']:,} dòng ({pct:.2f}%) có request KHÔNG khớp bất kỳ "
+              f"template nào trong _REQUEST_TEMPLATES hiện tại — có thể data cũ render bằng "
+              f"phiên bản template khác, hoặc lỗi parse.")
+
     print(f"\n{'='*60}\n  VALIDATE_NO_LEAKAGE\n{'='*60}")
     print(f"  Pass: {leak_pass:,} ({leak_pass/total_parsed*100:.2f}%)")
     print(f"  Fail: {leak_fail:,} ({leak_fail/total_parsed*100:.2f}%)")
@@ -197,7 +221,6 @@ def main():
             print(f"    [{r['type']}] explanation: {r['sample']['explanation'][:120]}...")
             print(f"             eval: {r['sample']['eval'][:150]}...")
 
-    # ── validate_cross_consistency — group theo chart gốc ──────────────
     cross_pass = cross_fail = 0
     cross_fail_keys = []
     multi_sample_groups = 0
@@ -222,7 +245,7 @@ def main():
         if cross_fail_keys:
             print(f"\n  Ví dụ group FAIL (chart_index, sub_range): {cross_fail_keys}")
 
-    del groups  # xong phần cần groups, giải phóng trước khi in phần còn lại
+    del groups
 
     if all_lengths:
         lengths = np.array(all_lengths)

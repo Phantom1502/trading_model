@@ -238,7 +238,6 @@ High và Low quan trọng khi so sánh NHIỀU nến — cho biết mức giá x
     # ── Tầng 1 ────────────────────────────────────────────────────
     def _layer1_classify(self) -> str:
         lines = [
-            "=== ÁP DỤNG: PHÂN LOẠI TỪNG CÂY NẾN TRONG CHART ===\n",
             f"Chart này có tổng cộng {self.n} cây nến:\n",
         ]
         for i, c in enumerate(self.candles):
@@ -249,7 +248,6 @@ High và Low quan trọng khi so sánh NHIỀU nến — cho biết mức giá x
     def _layer2_current_price(self) -> str:
         last = self.candles[-1]
         return (
-            "=== KHÁI NIỆM: GIÁ HIỆN TẠI ===\n\n"
             "Giá hiện tại là giá Close của cây nến CUỐI CÙNG trong chart.\n\n"
             f"Trong chart này, cây nến cuối cùng là cây nến thứ {self.n} {last.tag()}. "
             f"Vậy giá hiện tại là {last.close:g}.\n"
@@ -257,11 +255,7 @@ High và Low quan trọng khi so sánh NHIỀU nến — cho biết mức giá x
 
     # ── Tầng 3 ────────────────────────────────────────────────────
     def _layer3_swing(self) -> str:
-        lines = [
-            "=== KHÁI NIỆM NÂNG CAO: SWING HIGH / SWING LOW ===\n",
-            "Swing High (đỉnh cục bộ): nến có High CAO HƠN tất cả nến lân cận.\n"
-            "Swing Low  (đáy cục bộ): nến có Low THẤP HƠN tất cả nến lân cận.\n",
-        ]
+        lines = []
         found = False
         for i, c in enumerate(self.candles):
             if self.parser.is_swing_high(i):
@@ -282,12 +276,7 @@ High và Low quan trọng khi so sánh NHIỀU nến — cho biết mức giá x
 
     # ── Tầng 4 ────────────────────────────────────────────────────
     def _layer4_fvg(self) -> str:
-        lines = [
-            "=== KHÁI NIỆM QUAN TRỌNG NHẤT: FAIR VALUE GAP (FVG) ===\n",
-            "FVG xét 3 nến liên tiếp, so sánh nến ĐẦU với nến THỨ BA:\n"
-            "- Bullish FVG: Low nến thứ 3 > High nến thứ 1 → khoảng trống tăng.\n"
-            "- Bearish FVG: High nến thứ 3 < Low nến thứ 1 → khoảng trống giảm.\n",
-        ]
+        lines = []
         found = False
         for i in range(self.n):
             fvg = self.parser.is_fvg(i)
@@ -309,11 +298,7 @@ High và Low quan trọng khi so sánh NHIỀU nến — cho biết mức giá x
 
     # ── Tầng 5 ────────────────────────────────────────────────────
     def _layer5_synthesis(self) -> str:
-        lines = [
-            "=== TỔNG HỢP: LIÊN KẾT CÁC KHÁI NIỆM TRÊN CÙNG MỘT CÂY NẾN ===\n",
-            "Một cây nến có thể đồng thời mang nhiều vai trò: tăng/giảm/doji, "
-            "Swing High/Low, và thuộc về một FVG.\n",
-        ]
+        lines = []
         found = False
         for i, c in enumerate(self.candles):
             roles = [{"BULL": "nến tăng", "BEAR": "nến giảm", "DOJI": "nến doji"}[c.direction()]]
@@ -332,14 +317,7 @@ High và Low quan trọng khi so sánh NHIỀU nến — cho biết mức giá x
 
     # ── Tầng 6 ────────────────────────────────────────────────────
     def _layer6_patterns(self) -> str:
-        lines = [
-            "=== KHÁI NIỆM: MẪU HÌNH NẾN (PRICE ACTION PATTERNS) ===\n",
-            "Các mẫu hình nến là gợi ý xác suất, KHÔNG phải quy luật chắc chắn.\n"
-            "- Hammer: bóng dưới dài, thân nhỏ → gợi ý đảo chiều TĂNG.\n"
-            "- Shooting Star: bóng trên dài, thân nhỏ → gợi ý đảo chiều GIẢM.\n"
-            "- Bullish Engulfing: nến tăng nuốt trọn thân nến giảm trước → gợi ý TĂNG.\n"
-            "- Bearish Engulfing: nến giảm nuốt trọn thân nến tăng trước → gợi ý GIẢM.\n",
-        ]
+        lines = []
         found = False
         for i, c in enumerate(self.candles):
             pin = self.parser.is_pin_bar(i)

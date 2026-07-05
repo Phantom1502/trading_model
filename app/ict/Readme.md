@@ -55,7 +55,7 @@ pip install pytest
 
 # Từ root project
 python -m pytest app/ict/tests/ -v
-# Expected: 102/102 passed
+# Expected: 107/107 passed
 ```
 
 ---
@@ -262,6 +262,13 @@ hệ giữa MỌI CẶP event, mỗi phần tử:
 > ra khá tự nhiên khi 1 nến vừa xuyên wick qua swing vừa đóng cửa xác nhận,
 > xem `test_relations_integration.py::test_clear_swept_shift_same_candle_resolves_naturally`.
 
+> **Lưu ý:** `render.py` (mục dưới) **không còn tiêu thụ** `facts["relations"]`
+> nữa — kể từ khi bỏ field `SEQUENCE` (xem "Field SEQUENCE — ĐÃ BỎ"), việc
+> render 4 dạng mẫu tin không cần tới nó. `relations` vẫn được tính trong
+> `facts.py` (vẫn là fact/ground truth hợp lệ của Tầng 2) — giữ lại cho khả
+> năng dùng sau này (vd tính Q-score tổng hợp ở Tầng 3), không phải phần
+> thừa cần xoá.
+
 ### Render 4 dạng mẫu tin (KHÔNG dùng GPT)
 
 > **Quyết định quan trọng:** ban đầu dự kiến dùng GPT để diễn đạt fact
@@ -282,9 +289,10 @@ samples = render_all_samples(facts, parser.raw_text, rng=random.Random(42))
 #   "chart": "<chart> ... </chart>",       # KHÔNG đổi
 #   "request": "Phân tích Liquidity Sweep trong chart này.",
 #   "explanation": "Nến thứ 6 quét qua đỉnh cũ ...",
-#   "eval": "<eval>TYPE=SWEEP_HIGH CANDLE=6 ...</eval>",
+#   "eval": "<eval>T=SWEEP_HIGH C=6 SC=3 SL=530 D=5</eval>",
 #   "text": "<chart>...\n{request}\n{explanation}\n{eval}",  # 4 phần ghép sẵn
-#   "event_count": 2,
+#   "event_count": 2,        # số event ĐÃ HIỂN THỊ (sau khi lọc top-K nếu có)
+#   "total_event_count": 2,  # số event THẬT SỰ phát hiện (trước khi lọc)
 # }
 ```
 
@@ -296,6 +304,72 @@ samples = render_all_samples(facts, parser.raw_text, rng=random.Random(42))
 > Đánh số nến trong text/eval là **1-based** (khớp convention
 > `candle_parser.py`), trong khi mọi index trong fact dict là 0-based —
 > `render.py` tự động +1 khi hiển thị.
+
+### Bảng viết tắt key trong `<eval>` (đã chốt sau khi có dữ liệu thật)
+
+| Đầy đủ (cũ) | Viết tắt (mới) | Đầy đủ (cũ) | Viết tắt (mới) |
+|---|---|---|---|
+| `EVENT` (tiền tố) | `E` | `GAP_LOW` | `GL` |
+| `TYPE` | `T` | `GAP_HIGH` | `GH` |
+| `CANDLE` | `C` | `GAP_SIZE` | `GS` |
+| `SWING_CANDLE` | `SC` | `FILL_PCT` | `FP` |
+| `SWING_LEVEL` | `SL` | `DIRECTION` | `DIR` |
+| `DEPTH` | `D` | `BROKEN` | `BR` |
+
+Lý do: tokenizer BPE nhỏ (~16k vocab, chủ yếu train tiếng Việt/code) không
+có sẵn token nguyên khối cho chuỗi ALLCAPS_GẠCH_DƯỚI hiếm gặp, phải tách
+nhỏ nhiều mảnh — cộng dồn đáng kể qua nhiều field/event. Xem "Case study 3"
+bên dưới để biết số liệu thật đã dẫn tới quyết định này.
+
+### Top-K cho FVG — giới hạn dựa trên dữ liệu thật
+
+> **Phát hiện quan trọng từ validate quy mô lớn (5.7M dòng, cửa sổ 20 nến):**
+> giới hạn cửa sổ 20 nến MỘT MÌNH KHÔNG ĐỦ tránh vượt `max_seq=512`. Mật độ
+> FVG (~25%/nến) đủ cao để mẫu FVG đơn lẻ đã vượt ngân sách ngay ở **p50**
+> (536 token, 51.13% mẫu vượt 512), mẫu Tổng hợp còn nặng hơn (**p50=730,
+> 87.99% vượt 512**). Swept/Shift KHÔNG cần giới hạn — 0% vượt ngân sách ở
+> cùng thống kê.
+
+`render_fvg_sample` và phần FVG trong `render_synthesis_sample` áp dụng
+`FVG_TOP_K` (mặc định = 4): nếu số FVG thật sự phát hiện vượt ngưỡng này,
+chỉ giữ lại K event **đáng chú ý nhất**, chọn theo 2 tiêu chí kết hợp:
+
+1. **Gần vùng giá hiện tại** — khoảng cách `|trung điểm gap - Close nến cuối|`
+2. **Gần về thời gian** — `candle_idx` gần cuối cửa sổ hơn
+
+Kết hợp bằng **rank** (không phải giá trị thô, vì 2 đại lượng khác đơn vị):
+mỗi tiêu chí xếp hạng riêng, cộng 2 rank lại, giữ K event có tổng rank nhỏ
+nhất — sau đó **sắp xếp lại theo thứ tự thời gian** khi hiển thị (rank chỉ
+quyết định giữ/bỏ, không quyết định thứ tự đọc).
+
+```python
+from app.ict.render import FVG_TOP_K   # = 4, xem docstring render.py
+
+sample = render_fvg_sample(facts, raw_chart_text)
+sample["event_count"]        # <= FVG_TOP_K
+sample["total_event_count"]  # số FVG thật sự phát hiện (có thể > FVG_TOP_K)
+```
+
+> **`FVG_TOP_K=4` là giá trị mặc định BAN ĐẦU** — đã xác nhận qua validate
+> thật: FVG đơn lẻ giờ 0% vượt `max_seq` (p50=450). Mẫu Tổng hợp vẫn còn
+> vượt nhiều dù đã lọc (81.98% > 512 trước khi bỏ SEQUENCE + rút gọn key,
+> xem "Case study 3" bên dưới) — nên regenerate + chạy lại
+> `stats_validate.py` sau khi áp dụng cả 2 thay đổi để xem tỷ lệ mới.
+
+### Field SEQUENCE — ĐÃ BỎ khỏi mẫu Tổng hợp
+
+Bản thiết kế đầu có field `SEQUENCE` riêng (dạng `"1<2,2~3"`) mã hoá quan
+hệ thứ tự giữa các event. **Đã bỏ hoàn toàn** vì dư thừa: field `C`
+(candle) đã có sẵn trong TỪNG event — model tự so sánh 2 giá trị `C` để
+suy thứ tự thời gian mà không cần field riêng liệt kê lại. Cái duy nhất
+`SEQUENCE` từng cung cấp thêm là rule tie-break "Swept trước Shift" khi
+trùng candle — giờ truyền đạt đơn giản hơn: **mẫu Tổng hợp sắp xếp event
+theo đúng thứ tự thời gian (candle_idx) khi hiển thị** (sort ổn định giữ
+đúng thứ tự Swept-trước-Shift khi trùng candle).
+
+Hệ quả: `render.py` **không còn cần `facts["relations"]`** cho bất kỳ việc
+gì — toàn bộ logic remap index (từng cần để giữ `SEQUENCE` đúng sau khi
+lọc top-K) biến mất theo, code đơn giản hẳn.
 
 ### Validate sample đã render
 
@@ -521,7 +595,7 @@ cách/kích thước tại điểm phát hiện) thay vì cố tinh chỉnh tham
 
 ---
 
-## Case study: bug chỉ integration test mới bắt được
+## Case study 1: bug chỉ integration test mới bắt được
 
 `tests/test_relations.py` (unit test, dùng dict event **tự tạo tay**) từng
 pass 100% trong khi `relations.py` có 1 bug thật: `_event_direction()` chỉ
@@ -545,6 +619,113 @@ tạo tay dễ vô tình "khớp đúng" giả định của code đang test —
 
 ---
 
+## Case study 2: validate quy mô lớn tìm ra vấn đề mà sandbox không thấy được
+
+Chạy `stats_validate.py` trên **5.7 triệu dòng data thật** (đã render, cửa
+sổ 20 nến) lộ ra 2 phát hiện mà toàn bộ test trong sandbox (dù đã 108 test)
+không hề bắt được — vì sandbox chỉ test trên vài chart tổng hợp nhỏ, không
+đủ đa dạng để chạm vào các trường hợp này:
+
+1. **Bug template thật (0.6% dòng fail `validate_no_leakage`):** 2 template
+   FVG có chữ số **"1"** trong câu tiếng Việt tự nhiên ("hình thành **1**
+   khoảng trống") — không phải số liệu từ fact dict, nhưng `validate_no_leakage`
+   (cố tình thiết kế đơn giản) hiểu nhầm là leak. Sandbox test trước đó
+   dùng seed ngẫu nhiên nhỏ, không may "trúng" đúng 2 template này — chỉ
+   khi chạy đủ lớn (hàng triệu dòng, mọi template variant đều được dùng
+   nhiều lần) mới chắc chắn lộ ra. Đã fix (bỏ chữ "1" thừa) + thêm
+   `test_clear_no_leakage_every_template_variant` duyệt **toàn bộ** template
+   một cách tất định (không phụ thuộc random seed) để chặn tái diễn.
+
+2. **Vấn đề thiết kế nghiêm trọng hơn nhiều (không phải bug code, mà là data
+   không như kỳ vọng):** dù đã giới hạn cửa sổ 20 nến, mẫu FVG đơn lẻ vẫn
+   vượt `max_seq=512` ngay ở **p50** (536 token, 51% mẫu vượt), mẫu Tổng hợp
+   còn nặng hơn (**p50=730, 88% vượt**). Nguyên nhân: mật độ FVG (~25%/nến)
+   đủ cao để riêng việc giới hạn cửa sổ KHÔNG đủ — quyết định "giảm cửa sổ
+   20 nến sẽ giải quyết được" (chốt trước khi có số liệu) hoá ra **không
+   đủ**, phải quay lại áp dụng `FVG_TOP_K` đã cân nhắc nhưng gác lại trước
+   đó.
+
+**Bài học:** cả 2 phát hiện đều chỉ lộ ra khi chạy **đủ lớn trên data thật**
+— không phải vì sandbox test sai, mà vì một số vấn đề (tần suất bug hiếm,
+phân phối đuôi dài của token length) về bản chất cần cỡ mẫu lớn mới bộc lộ
+rõ. Không nên coi 100% test pass trong sandbox là tín hiệu "sẵn sàng train" —
+luôn cần ít nhất 1 lượt validate + thống kê trên toàn bộ (hoặc phần lớn)
+dataset thật trước khi đưa vào train, đúng theo gate đã đặt ra ở Giai đoạn 5
+("tỷ lệ pass validate trên batch nhỏ đủ cao trước khi gen hàng loạt" — cần
+áp dụng lại tương tự sau khi gen hàng loạt, không chỉ trước).
+
+---
+
+## Case study 3: FVG_TOP_K áp dụng xong vẫn chưa đủ — 2 tối ưu bổ sung
+
+Sau khi thêm `FVG_TOP_K=4` (Case study 2), regenerate + chạy lại
+`stats_validate.py` trên 5.75M dòng cho kết quả:
+
+```
+                    TRƯỚC top-K          SAU top-K
+fvg (đơn lẻ)        p50=536, 51.1% vượt  p50=450, 0% vượt   ✅ Giải quyết xong
+synthesis           p50=730, 88.0% vượt  p50=635, 82.0% vượt ⚠️ Vẫn còn nặng
+```
+
+FVG đơn lẻ đã giải quyết triệt để, nhưng **Tổng hợp vẫn còn 82% vượt
+ngân sách** — vì nó cộng thêm Swept (~2.4 event trung bình) + Shift (~1.6)
+không bị lọc, cộng với chi phí field verbosity của từng event. Dẫn tới 2
+tối ưu bổ sung, cả 2 đều xuất phát từ câu hỏi trực tiếp của người dùng khi
+soát lại thiết kế, không phải tự phát hiện qua thống kê:
+
+1. **Bỏ field `SEQUENCE`** — câu hỏi đặt ra: "field `C` (candle) đã đủ để
+   model suy thứ tự chưa, có thật sự cần liệt kê lại quan hệ không?". Rà
+   lại đúng: `SEQUENCE` (dạng `"1<2,2~3"`) chỉ thêm token mà không thêm
+   thông tin mới ngoài rule tie-break "Swept trước Shift" — và rule đó
+   giờ truyền đạt đơn giản hơn bằng cách **sắp xếp event theo thời gian**
+   khi hiển thị (sort ổn định giữ đúng thứ tự khi trùng candle). Hệ quả
+   phụ: loại bỏ hoàn toàn nhu cầu dùng `facts["relations"]` trong
+   `render.py`, code đơn giản hẳn (không cần remap index sau top-K nữa).
+
+2. **Rút gọn tên field** (`EVENT`→`E`, `TYPE`→`T`, `SWING_CANDLE`→`SC`...)
+   — câu hỏi đặt ra: "các key này lặp lại khá nhiều, viết tắt có ảnh hưởng
+   gì không?". Đây nhiều khả năng là đòn bẩy token LỚN HƠN cả việc bỏ
+   SEQUENCE: tokenizer BPE nhỏ (~16k vocab, chủ yếu train tiếng Việt/code)
+   không có sẵn token nguyên khối cho chuỗi ALLCAPS_GẠCH_DƯỚI hiếm gặp như
+   `SWING_CANDLE`, phải tách nhỏ nhiều mảnh — cộng dồn qua nhiều field ×
+   nhiều event trong 1 mẫu Tổng hợp.
+
+Cả 2 thay đổi đụng vào **cả `render.py` lẫn `validate.py`** (vì
+`_event_identity()`/`_parse_eval_events()` hardcode tên field để nhận
+diện event) — đã cập nhật đồng bộ, 107/107 test pass sau khi sửa toàn bộ
+test liên quan.
+
+**Kết quả đo lại sau khi regenerate (5.75M dòng) — ✅ Đã chốt:**
+
+```
+                    Trước (top-K only)   Sau (bỏ SEQUENCE + rút gọn key)
+Tổng thể vượt 512   21.96%               7.08%       ↓ giảm ~3.1 lần
+synthesis vượt 512  81.98%               26.32%      ↓ giảm ~3.1 lần
+synthesis p50       730                  453         ↓ giảm 277 token
+synthesis max        1328                 913         ↓ giảm 415 token
+fvg/swept/shift      0% vượt              0% vượt, p50 giảm thêm (vd swept 305→259)
+```
+
+Rút gọn key có lợi cho **mọi** loại mẫu (không chỉ Tổng hợp) — xác nhận
+qua số liệu thật, đúng dự đoán ban đầu.
+
+**Quyết định:** chấp nhận 7.08% tổng thể vượt ngân sách, KHÔNG tối ưu
+thêm. Lý do: `TokenChunkDataset` (dataset.py) không drop document dài hơn
+`seg_len` mà CẮT thành nhiều đoạn nối tiếp — 7.08% mẫu bị cắt tạo ra 1
+lượng nhỏ "mẫu gãy" (bắt đầu đột ngột giữa/gần cuối block `<eval>`), chấp
+nhận được ở quy mô pretrain trộn nhiều domain, không đáng đánh đổi thêm
+information loss bằng cách giảm `FVG_TOP_K` hoặc lọc thêm Swept/Shift.
+
+**Bài học:** không phải mọi tối ưu quan trọng đều lộ ra qua thống kê —
+2 thay đổi ở đây tới từ việc **rà soát lại thiết kế bằng câu hỏi trực
+tiếp** ("có thật sự cần field này không", "tên field dài có ảnh hưởng
+gì") chứ không phải từ con số. Chạy số liệu tốt vẫn cần đi kèm việc định
+kỳ hỏi lại "phần này có thật sự cần thiết không" — nhất là với phần mới
+thêm gần đây (SEQUENCE mới thêm cách đây không lâu để giải quyết vấn đề
+khác, chưa kịp bị đặt câu hỏi lại).
+
+---
+
 ## Trạng thái triển khai
 
 | Module | Trạng thái | Ghi chú |
@@ -558,10 +739,10 @@ tạo tay dễ vô tình "khớp đúng" giả định của code đang test —
 | `ict.py::is_shift` / `scan_all_shift` | ✅ Xong | 11/11 golden test pass (test-first: viết test trước khi có logic) |
 | `relations.py` | ✅ Xong | Tie-breaking Swept-trước-Shift ĐÃ quyết định; case có FVG vẫn `SAME_CANDLE` (chưa quyết định) |
 | `facts.py` | ✅ Xong | `initial_trend` giờ BẮT BUỘC (không default) — gọi thiếu raise `TypeError` |
-| `render.py` | ✅ Xong (v1) | Template engine, KHÔNG dùng GPT. Chưa xử lý case "0 event" (SKIP, xem README) |
-| `validate.py` | ✅ Xong | `validate_cross_consistency` + `validate_no_leakage`, giản lược sau khi bỏ GPT |
+| `render.py` | ✅ Xong (v1 + top-K + key rút gọn) | Template engine, KHÔNG dùng GPT. `FVG_TOP_K=4`. Đã bỏ SEQUENCE, key rút gọn (xem README). Chưa xử lý case "0 event" |
+| `validate.py` | ✅ Xong | `validate_cross_consistency` + `validate_no_leakage`, parse theo key rút gọn mới |
 
-**Tổng 102/102 golden test pass** trên toàn bộ `app/ict/tests/` (16 file, xem
+**Tổng 107/107 golden test pass** trên toàn bộ `app/ict/tests/` (16 file, xem
 mục Cấu trúc ở đầu README để biết breakdown theo từng module).
 
 ---
@@ -591,10 +772,33 @@ theo test-first, 11/11 golden test pass, đã wire vào `facts.py` (yêu cầu
 functional end-to-end** (CSV → detector → fact JSON → 4 dạng mẫu tin →
 validate), xem demo chạy thật trong lịch sử session.
 
+**Giai đoạn 5.5 — ✅ Hoàn tất (bổ sung sau khi có data thật).** Chạy
+`stats_validate.py` trên 5.7M dòng đã gen, phát hiện + fix:
+- Bug template thật (0.6% fail `validate_no_leakage`) — 2 template FVG có
+  chữ "1" tự nhiên gây false-positive. Đã fix + thêm test duyệt toàn bộ
+  template (không phụ thuộc random seed).
+- Vấn đề thiết kế nghiêm trọng hơn: cửa sổ 20 nến một mình KHÔNG đủ tránh
+  vượt `max_seq=512` (FVG đơn lẻ p50=536, Tổng hợp p50=730). Đã thêm
+  `FVG_TOP_K=4` — chọn theo kết hợp gần giá hiện tại + gần thời gian.
+
+**Giai đoạn 5.6 — ✅ Hoàn tất, ĐÃ ĐO LẠI VÀ CHỐT (2 tối ưu bổ sung sau khi
+regenerate).** Regenerate lại với `FVG_TOP_K` cho thấy FVG đơn lẻ đã hết
+vượt ngân sách (0%), nhưng Tổng hợp vẫn còn 82% vượt. Xử lý bằng 2 thay
+đổi (xem "Case study 3" ở trên):
+- **Bỏ field `SEQUENCE`** — dư thừa vì field `C` đã đủ để suy thứ tự thời
+  gian; thay bằng sắp xếp event theo candle_idx khi hiển thị. Hệ quả phụ:
+  `render.py` không còn cần `facts["relations"]`.
+- **Rút gọn tên field trong `<eval>`** (bảng viết tắt ở trên) — giảm chi
+  phí token do tokenizer BPE nhỏ phải tách nhỏ chuỗi ALLCAPS_GẠCH_DƯỚI dài.
+
+Đo lại trên 5.75M dòng sau 2 thay đổi: tổng thể vượt ngân sách giảm từ
+21.96% → **7.08%**, Tổng hợp giảm từ 81.98% → **26.32%**. Đã quyết định
+**chấp nhận mức 7.08% này, không tối ưu thêm** — `TokenChunkDataset` cắt
+document dài thay vì drop, nên phần vượt ngân sách chỉ tạo 1 lượng nhỏ
+mẫu bị cắt (không mất hẳn), chấp nhận được ở quy mô pretrain trộn nhiều
+domain.
+
 **Open item còn lại (domain decision, chưa tự ý làm):**
 - Chart 0 event (không phát hiện Swept/FVG/Shift nào) hiện bị `render.py`
   SKIP hoàn toàn — nếu cần data âm (negative example) cho training, cần
   quyết định format riêng trước khi thêm.
-- `render_synthesis_sample()` định dạng field `SEQUENCE` (`"1<2,3~1,..."`)
-  là lựa chọn implementation của module, không phải hằng số cứng từ spec —
-  có thể đổi nếu cần format khác dễ parse hơn.

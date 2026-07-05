@@ -3,7 +3,7 @@ import glob
 import pyarrow.parquet as pq
 import pyarrow as pa
 
-def merge_parquet_files(input_dir, output_dir, target_size_mb=500):
+def merge_parquet_files(input_dir, output_dir, template_name = "part", target_size_mb=500):
     """
     Gom các file Parquet nhỏ trong thư mục thành các file lớn ~500MB.
     """
@@ -34,7 +34,7 @@ def merge_parquet_files(input_dir, output_dir, target_size_mb=500):
 
     def get_next_output_path():
         nonlocal file_idx
-        path = os.path.join(output_dir, f"part_{file_idx:04d}.parquet")
+        path = os.path.join(output_dir, f"{template_name}_{file_idx:04d}.parquet")
         file_idx += 1
         return path
 
@@ -48,7 +48,7 @@ def merge_parquet_files(input_dir, output_dir, target_size_mb=500):
                 current_writer.close()
                 current_writer = None
                 current_file_size = 0
-                print(f"-> Đã đóng file part_{file_idx-1:04d}.parquet (Đạt kích thước mục tiêu)")
+                print(f"-> Đã đóng file {template_name}_{file_idx-1:04d}.parquet (Đạt kích thước mục tiêu)")
 
             # Khởi tạo writer mới nếu chưa có
             if current_writer == None:
@@ -78,11 +78,13 @@ def merge_parquet_files(input_dir, output_dir, target_size_mb=500):
 
 # --- CẤU HÌNH ĐƯỜNG DẪN TẠI ĐÂY ---
 if __name__ == "__main__":
-    INPUT_DIRECTORY = r"E:\LLM Dataset\Mix\merged_output\chunk_00005"       # Thư mục chứa hàng trăm file 40MB ban đầu
-    OUTPUT_DIRECTORY = r"E:\LLM Dataset\Mix"   # Thư mục chứa các file ~500MB sau khi gom
+    for i in range(0,19):
+        INPUT_DIRECTORY = f"E:/LLM Dataset/Mix/merged_output/chunk_000{i:02d}"       # Thư mục chứa hàng trăm file 40MB ban đầu
+        OUTPUT_DIRECTORY = r"E:\LLM Dataset\Mix"   # Thư mục chứa các file ~500MB sau khi gom
     
-    merge_parquet_files(
-        input_dir=INPUT_DIRECTORY, 
-        output_dir=OUTPUT_DIRECTORY, 
-        target_size_mb=2000
-    )
+        merge_parquet_files(
+            input_dir=INPUT_DIRECTORY, 
+            output_dir=OUTPUT_DIRECTORY, 
+            template_name=f"chunk_000{i:02d}",
+            target_size_mb=2000
+        )

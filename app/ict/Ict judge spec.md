@@ -63,15 +63,61 @@ Việc này áp dụng cho **mọi detector mới** trước khi golden test cas
 
 - Không inline tag vào giữa `<chart>`. Lý do: phá chu kỳ 4 token/nến (O H L C) mà model pretrain đã quen, làm hỏng transfer learning. Eval luôn là block riêng, sau khi đóng `</chart>`.
 - Trích dẫn lại nến bằng số thứ tự ("nến 3", "nến 6"), không lặp lại OHLC đầy đủ trong câu văn — model đã thấy OHLC ở phần chart phía trên, lặp lại tốn token vô ích. (Đánh đổi: model phải tự "đếm" đúng vị trí nến — đây là lý do mục 9 có riêng nhóm test đếm/trích dẫn nến của model nền.)
-- `<eval>` dùng `KEY=VALUE` cách nhau bằng space, đánh số theo `EVENT1, EVENT2...` nếu nhiều sự kiện — không xuống dòng nhiều field, tiết kiệm token, vẫn đủ đơn giản để regex parse.
-- Nguyên tắc kiểm tra "rò rỉ": phần [3. Lý giải] phải LUÔN suy ra được trực tiếp từ phần [4. Chấm điểm]. Nếu xóa hết phần 3, người đọc vẫn tái dựng đúng câu chuyện từ phần 4. Nếu phần 3 có chi tiết mà phần 4 không có field tương ứng → dấu hiệu GPT tự thêm thắt khi diễn đạt → cần script validate bắt lại trước khi đưa vào training set.
+- `<eval>` dùng `KEY=VALUE` cách nhau bằng space, đánh số theo `E1_, E2_...` nếu nhiều sự kiện (N==1 không đánh số) — không xuống dòng nhiều field, tiết kiệm token, vẫn đủ đơn giản để regex parse.
+- Nguyên tắc kiểm tra "rò rỉ": phần [3. Lý giải] phải LUÔN suy ra được trực tiếp từ phần [4. Chấm điểm]. Nếu xóa hết phần 3, người đọc vẫn tái dựng đúng câu chuyện từ phần 4. Nếu phần 3 có chi tiết mà phần 4 không có field tương ứng → dấu hiệu template thêm thắt khi diễn đạt → có script `validate_no_leakage()` bắt tự động trước khi đưa vào training set.
 - Độ dài co giãn theo số sự kiện trong chart: <=2 sự kiện → câu đầy đủ, dạy lập luận kỹ. >=3 sự kiện → câu ngắn gọn hơn để không vượt budget token. Không cố định 1 độ dài cứng.
 
-### Ngân sách token (tính toán đã thống nhất)
+### Bảng viết tắt key trong `<eval>` (đã chốt sau khi có dữ liệu thật)
+
+Validate quy mô lớn (5.7M dòng, cửa sổ 20 nến) cho thấy tên field đầy đủ
+(`EVENT1_SWING_CANDLE`...) tốn token đáng kể — tokenizer BPE nhỏ (~16k
+vocab, chủ yếu train tiếng Việt/code) không có sẵn token nguyên khối cho
+chuỗi ALLCAPS_GẠCH_DƯỚI hiếm gặp, phải tách nhỏ nhiều mảnh. Đã rút gọn:
+
+| Đầy đủ (cũ) | Viết tắt (mới) | Đầy đủ (cũ) | Viết tắt (mới) |
+|---|---|---|---|
+| `EVENT` (tiền tố) | `E` | `GAP_LOW` | `GL` |
+| `TYPE` | `T` | `GAP_HIGH` | `GH` |
+| `CANDLE` | `C` | `GAP_SIZE` | `GS` |
+| `SWING_CANDLE` | `SC` | `FILL_PCT` | `FP` |
+| `SWING_LEVEL` | `SL` | `DIRECTION` | `DIR` |
+| `DEPTH` | `D` | `BROKEN` | `BR` |
+
+Ví dụ mẫu Tổng hợp sau khi rút gọn:
+```
+<eval>E1_T=BULL E1_C=4 E1_GL=508 E1_GH=510 E1_GS=2 E1_FP=0.0 E2_T=SWEEP_HIGH E2_C=6 E2_SC=3 E2_SL=530 E2_D=5</eval>
+```
+
+### Field SEQUENCE — ĐÃ BỎ (quyết định thay đổi so với thiết kế ban đầu)
+
+Bản thiết kế đầu tiên có field `SEQUENCE` riêng mã hoá quan hệ thứ tự giữa
+các event (dạng `"1<2,2~3"`). Đã **bỏ hoàn toàn** vì dư thừa: field `C`
+(candle) đã có sẵn trong TỪNG event, model hoàn toàn có thể tự so sánh 2
+giá trị `C` để suy ra thứ tự thời gian mà không cần 1 field riêng liệt kê
+lại quan hệ đó. Cái duy nhất `SEQUENCE` từng cung cấp thêm là rule
+tie-break "Swept trước Shift" khi trùng candle — giờ truyền đạt đơn giản
+hơn nhiều: **mẫu Tổng hợp sắp xếp event theo đúng thứ tự thời gian
+(candle_idx) khi hiển thị** (sort ổn định, nên 2 event cùng candle vẫn giữ
+đúng thứ tự Swept-trước-Shift đã quyết định), nên thứ tự xuất hiện trong
+text tự nó đã là tín hiệu thứ tự.
+
+Hệ quả: không còn cần dùng `relations` (Tầng 2) trong bước render — toàn
+bộ logic remap index (từng cần để giữ `SEQUENCE` đúng sau khi lọc top-K)
+cũng biến mất theo, code đơn giản hẳn.
+
+### Ngân sách token (tính toán đã thống nhất — CẦN ĐỌC CÙNG mục dưới)
 
 - 1 chart 20 nến = 20 x 4 token giá + 2 marker = 82 token
 - Còn lại ~400 token cho text (yêu cầu + lý giải + eval) trên seq_len 512
 - 1 bộ chart (1 lần chạy giải thuật) dùng để render ra nhiều mẫu tin (xem mục 7), không chạy giải thuật lại nhiều lần
+
+**⚠️ Cập nhật quan trọng từ dữ liệu thật:** tính toán ban đầu ("20 nến sẽ
+đủ") KHÔNG ĐÚNG trên thực tế — mật độ FVG (~25%/nến) đủ cao để một mình
+giới hạn cửa sổ 20 nến không tránh được việc vượt `max_seq=512` (mẫu FVG
+đơn lẻ p50=536 token trước khi tối ưu). Đã bổ sung `FVG_TOP_K=4` (chọn
+theo gần giá hiện tại + gần thời gian) và rút gọn key như trên — xem
+README.md package `app/ict/` "Case study 2" và "Case study 3" để biết chi
+tiết số liệu và quá trình xử lý.
 
 ---
 
