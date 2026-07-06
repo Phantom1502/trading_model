@@ -35,11 +35,7 @@ from app.ict.facts import build_facts
 from app.ict.render import (
     render_swept_sample, render_fvg_sample, render_shift_sample,
 )
-
-try:
-    from .benchmark import BenchItem, avg_logprob_per_token
-except ImportError:
-    from benchmark import BenchItem, avg_logprob_per_token
+from .benchmark import BenchItem, avg_logprob_per_token, run_logprob_benchmark
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -253,7 +249,6 @@ def run_ict_benchmark(
     bình mỗi loại + "ict_total" (trung bình 3 loại) — cùng format trả về
     style run_all() để dễ ghép vào log_bench()/checkpoint tracking.
     """
-    from benchmark import run_logprob_benchmark   # import trễ, tránh vòng lặp import nếu cần
 
     device = device or next(model.parameters()).device
     max_seq = cfg.model.max_seq
