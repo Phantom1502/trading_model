@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from app.memlm.model import causal_mask
 from app.memlm.utils import TrainLogger, log_eval, log_bench, save_checkpoint
 from app.memlm.benchmark import run_all
-
+from app.memlm.benchmark_ict import run_all_ict_benchmarks
 
 class BaseTrainer:
     def __init__(self, cfg, model, tokenizer):
@@ -172,7 +172,7 @@ class BaseTrainer:
                     model_cfg=self.cfg.model,
                 )
 
-            bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
+            bench = run_all_ict_benchmarks(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
             self.model.train()
             log_bench(bench, step=self.global_step)
 
@@ -231,6 +231,6 @@ class BaseTrainer:
         val_loss = self.evaluate(val_loader)
         log_eval(val_loss, step=self.global_step, prefix="  [Chunk end] ")
 
-        bench = run_all(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
+        bench = run_all_ict_benchmarks(self.model, self.tokenizer, self.cfg, verbose=False, step=self.global_step)
         log_bench(bench, step=self.global_step)
         return val_loss
