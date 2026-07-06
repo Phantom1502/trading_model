@@ -42,6 +42,7 @@ THAY ĐỔI SO VỚI PHIÊN BẢN PHOBERT:
 ────────────────────────────────────────────────────────────────────────────
 """
 
+import os
 import re
 import warnings
 from transformers import AutoTokenizer
@@ -248,8 +249,10 @@ class VietnameseTokenizer:
 
 def load_tokenizer(cfg) -> VietnameseTokenizer:
     """Entry point để load tokenizer từ TokenizerConfig."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    tok_path = os.path.join(base_dir, "app", "memlm", "custom_tokenizer")
     return VietnameseTokenizer(
-        pretrained_name  = cfg.tokenizer.pretrained_name,
+        pretrained_name  = tok_path,
         use_fast         = cfg.tokenizer.use_fast,
         n_price_bins     = cfg.tokenizer.n_price_bins,
         strict_chart_mode= cfg.tokenizer.strict_chart_mode,
