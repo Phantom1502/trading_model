@@ -250,7 +250,7 @@ class VietnameseTokenizer:
 def load_tokenizer(cfg) -> VietnameseTokenizer:
     """Entry point để load tokenizer từ TokenizerConfig."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    tok_path = os.path.join(base_dir, "app", "memlm", "custom_tokenizer")
+    tok_path = os.path.join(base_dir, "custom_tokenizer")
     return VietnameseTokenizer(
         pretrained_name  = tok_path,
         use_fast         = cfg.tokenizer.use_fast,
