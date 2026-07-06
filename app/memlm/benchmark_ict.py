@@ -300,6 +300,7 @@ def run_all_ict_benchmarks(
     cfg,
     device=None,
     verbose: bool = True,
+    step=None,
     seed: int = 42,
 ) -> Dict[str, float]:
     """
@@ -307,7 +308,10 @@ def run_all_ict_benchmarks(
     benchmark khác trong benchmark.py (nếu muốn) — trả về dict điểm trung
     bình mỗi loại + "ict_total" (trung bình 3 loại) + các benchmark khác.
     """
-    
+    if verbose:
+        step_str = f"step {step}" if step is not None else "checkpoint"
+        print(f"\n{'═'*60}\n  BENCHMARK  —  {step_str}\n{'═'*60}")
+        
     charts = []
     for c in CANDLES:
         candles = CandleParser(raw_text=c, swing_window=2).candles

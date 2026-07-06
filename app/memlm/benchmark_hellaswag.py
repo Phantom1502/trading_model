@@ -17,7 +17,7 @@ import torch
 import torch.nn.functional as F
 from datasets import load_dataset
 
-from model import causal_mask
+from .model import causal_mask
 
 
 # ══════════════════════════════════════════════════════════════════════════
