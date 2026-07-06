@@ -16,7 +16,11 @@ import torch.nn.functional as F
 
 from .model import causal_mask
 
-
+from .config import get_100m_config, ModelConfig
+from .tokenizer import load_tokenizer
+from .model import build_model
+from .utils import load_checkpoint
+import torch as _torch
 # ══════════════════════════════════════════════════════════════════════════
 # Sampling
 # ══════════════════════════════════════════════════════════════════════════
@@ -112,11 +116,6 @@ def load_model_for_inference(checkpoint_path: str, device: str = None, fallback_
     Load model + tokenizer + config từ checkpoint.
     Đọc model_cfg đã lưu trong checkpoint để build đúng kiến trúc lúc train.
     """
-    from config import get_100m_config, ModelConfig
-    from tokenizer import load_tokenizer
-    from model import build_model
-    from utils import load_checkpoint
-    import torch as _torch
 
     device = device or ("cuda" if _torch.cuda.is_available() else "cpu")
     cfg    = fallback_cfg or get_100m_config()
