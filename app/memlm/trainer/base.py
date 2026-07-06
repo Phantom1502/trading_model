@@ -20,9 +20,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model import causal_mask
-from utils import TrainLogger, log_eval, log_bench, save_checkpoint
-from benchmark import run_all
+from app.memlm.model import causal_mask
+from app.memlm.utils import TrainLogger, log_eval, log_bench, save_checkpoint
+from app.memlm.benchmark import run_all
 
 
 class BaseTrainer:

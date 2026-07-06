@@ -5,8 +5,8 @@ trainer/pretrain.py — Pretraining
 
 import torch
 from .base import BaseTrainer
-from utils import save_checkpoint, load_checkpoint
-from utils.checkpoint import hf_upload_latest
+from app.memlm.utils import save_checkpoint, load_checkpoint
+from app.memlm.utils.checkpoint import hf_upload_latest
 
 
 class PretrainTrainer(BaseTrainer):

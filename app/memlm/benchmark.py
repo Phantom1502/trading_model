@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import List
 
-from model import causal_mask
+from .model import causal_mask
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -14,7 +14,7 @@ Usage:
 import torch
 import torch.nn.functional as F
 
-from model import causal_mask
+from .model import causal_mask
 
 
 # ══════════════════════════════════════════════════════════════════════════
