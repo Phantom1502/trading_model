@@ -1,16 +1,20 @@
 """
-app/llama/config.py — Config cho nhánh pretrain dùng HF LlamaForCausalLM chuẩn
-==================================================================================
-Khác nhánh app/memlm/ (kiến trúc tự viết), nhánh này dùng thẳng
-transformers.LlamaConfig + LlamaForCausalLM để:
-    - Tương thích native với HF Trainer, TRL (SFTTrainer/DPOTrainer/RewardTrainer)
-    - GQA (num_key_value_heads) + KV-cache khi generate/benchmark
-    - resize_token_embeddings an toàn khi vocab thay đổi (thêm price token thật)
+app/llama/config.py — Config cho nhánh pretrain dùng HF LlamaForCausalLM + Trainer chuẩn
+============================================================================================
+So với bản trước (custom training loop tự viết), bản này chuyển hẳn sang
+transformers.Trainer + TrainingArguments — TrainConfig bên dưới vì vậy có
+thêm các field ánh xạ 1-1 sang TrainingArguments (xem train.py: build_training_args()).
 
 vocab_size trong LlamaConfig chỉ là PLACEHOLDER — bị ghi đè bởi
 model.build_model(cfg, tokenizer) ngay sau khi tokenizer thật được build
 (xem tokenizer.py: build_llama_tokenizer). KHÔNG tự sửa tay giá trị này khi
 đổi price bin count — sửa cfg.tokenizer.n_price_bins là đủ.
+
+LƯU Ý QUAN TRỌNG — vì sao có max_steps thay vì num_train_epochs:
+Dataset nạp theo kiểu streaming (datasets.IterableDataset) để KHÔNG load hết
+file parquet (>1GB) vào RAM. IterableDataset không có __len__, nên Trainer
+không tự tính được "1 epoch = bao nhiêu step" → BẮT BUỘC khai rõ
+cfg.train.max_steps thay vì dựa vào num_train_epochs.
 """
 
 from dataclasses import dataclass, field
@@ -35,43 +39,67 @@ class DataConfig:
     mix_sources   : dict = field(default_factory=dict)   # {name: (glob_pattern, prob)}
     mix_stopping  : str  = "first_exhausted"              # | "all_exhausted"
 
-    sequential_mode : bool = False
-    window_stride   : Optional[int] = None
-
-    chunk_size    : int   = 10_000
-    seg_len       : int   = 512
     min_text_len  : int   = 200
-    val_ratio     : float = 0.01
+
+    # Số document đầu tiên của stream dùng làm tập validation (streaming
+    # split — không thể chia theo tỉ lệ % vì không biết trước tổng số mẫu).
+    n_val_samples : int = 2_000
+
+    # Block size để "pack" nhiều document liên tiếp thành 1 sequence độ dài
+    # cố định (group_texts) — tận dụng tối đa context window, không lãng phí
+    # padding. Mặc định = max_position_embeddings của model.
+    block_size    : int = 1024
+
+    # Buffer cho streaming shuffle xấp xỉ (Dataset.shuffle(buffer_size=...))
+    # — không shuffle được toàn bộ vì dữ liệu không nằm hết trong RAM.
+    shuffle_buffer_size : int = 10_000
+
+    # Batch size khi .map() tokenize/group — batch càng lớn thì packing càng
+    # ít lãng phí phần dư cuối mỗi batch, nhưng tốn RAM tạm thời hơn.
+    map_batch_size : int = 1_000
 
 
 @dataclass
 class TrainConfig:
-    batch_size            : int   = 16
-    grad_accum             : int   = 32
-    lr                      : float = 3e-4
-    warmup_steps             : int   = 500
-    weight_decay              : float = 0.01
-    max_grad_norm              : float = 1.0
+    # ── Ánh xạ thẳng sang TrainingArguments ─────────────────────────────────
+    per_device_train_batch_size : int   = 16
+    per_device_eval_batch_size  : int   = 16
+    gradient_accumulation_steps : int   = 32
+    learning_rate                : float = 3e-4
+    weight_decay                  : float = 0.01
+    max_grad_norm                  : float = 1.0
+    warmup_ratio                     : float = 0.03
 
-    # Cosine annealing with warm restarts (SGDR) — giữ nguyên convention cũ
-    lr_decay_cycle_steps : int   = 50_000
-    lr_min_ratio          : float = 0.1
+    lr_scheduler_type : str = "cosine"   # dùng scheduler có sẵn của Trainer
 
-    total_chunks : int = -1     # -1 = train hết toàn bộ dataset
+    max_steps : int = 100_000   # BẮT BUỘC vì train_dataset là IterableDataset
 
-    log_every  : int = 100
-    eval_every : int = 500
-    save_every : int = 1000
+    logging_steps : int = 100
+    eval_steps    : int = 500
+    save_steps    : int = 1000
+    save_total_limit : int = 3
 
-    save_dir     : str            = "./checkpoints_llama"
-    resume_from  : Optional[str]  = None   # thư mục HF save_pretrained() (chunk_N/ hoặc best/)
+    output_dir  : str            = "./checkpoints_llama"
+    resume_from : Optional[str]  = None   # checkpoint-N/ (do Trainer tự lưu) hoặc None
 
-    device            : str  = "cuda"
-    mixed_precision   : bool = True
-    bf16              : bool = True   # ưu tiên bf16 nếu GPU hỗ trợ (Ampere+), fallback fp16
+    gradient_checkpointing : bool = True   # tiết kiệm VRAM, đánh đổi ~20% tốc độ
+    fp16 : bool = False
+    bf16 : bool = True   # ưu tiên bf16 nếu GPU hỗ trợ (Ampere+); đổi fp16=True nếu chạy T4
+
+    # 0 là BẮT BUỘC nếu muốn resume dataset streaming đúng vị trí (xem
+    # DatasetStateCallback trong train.py) — num_workers>0 khiến PyTorch fork
+    # tiến trình con giữ bản sao dataset riêng, tiến trình chính không thấy
+    # được vị trí thật đã đọc tới đâu.
+    dataloader_num_workers : int = 0
 
     hf_repo_id : Optional[str] = None
     hf_token   : Optional[str] = None
+    push_to_hub : bool = False
+
+    # ── Benchmark callback (run_llama_benchmark) ────────────────────────────
+    run_benchmark_every_eval : bool = True
+    n_language_samples       : int = 5
+    best_benchmark_dir       : str = "./checkpoints_llama/best_benchmark"
 
 
 @dataclass
@@ -79,7 +107,8 @@ class TokenizerConfig:
     """
     base_tokenizer_dir : tokenizer BPE gốc, train bằng app/memlm/scripts/train_tokenizer.py
     output_dir         : nơi lưu bản đã add_tokens() price vocab THẬT
-                         (khác app/memlm/tokenizer.py — không cộng ID ảo bên ngoài nữa)
+                         (khác app/memlm/tokenizer.py — không cộng ID ảo bên
+                         ngoài tokenizer thật nữa)
     n_price_bins       : số bin mỗi kênh O/H/L/C (mặc định 1024, khớp ChartCodec)
     """
     base_tokenizer_dir : str = "custom_tokenizer"
@@ -98,6 +127,9 @@ class Config:
     def __post_init__(self):
         if self.llama is None:
             self.llama = get_110m_llama_config()
+        # block_size mặc định khớp context window của model, tránh lệch tay
+        if self.data.block_size is None:
+            self.data.block_size = self.llama.max_position_embeddings
 
 
 def get_110m_llama_config() -> LlamaConfig:
@@ -117,7 +149,7 @@ def get_110m_llama_config() -> LlamaConfig:
         rms_norm_eps                  = 1e-5,
         rope_theta                     = 10000.0,
         tie_word_embeddings              = True,
-        use_cache                         = True,
+        use_cache                         = False,   # tắt khi train (đi cùng gradient_checkpointing)
         attention_bias                     = False,
         mlp_bias                            = False,
     )
@@ -134,7 +166,7 @@ def get_small_llama_config() -> LlamaConfig:
         num_key_value_heads           = 1,
         max_position_embeddings        = 128,
         tie_word_embeddings              = True,
-        use_cache                         = True,
+        use_cache                         = False,
     )
 
 
