@@ -132,26 +132,27 @@ def _make_tokenize_fn(tokenizer):
 
 
 def _make_group_texts_fn(block_size: int, eos_token_id: Optional[int]):
-    """Nối các document tokenize xong trong CÙNG 1 batch lại, cắt thành các
-    khối độ dài block_size (bỏ phần dư cuối < block_size của batch đó).
-    Chèn eos_token_id giữa các document để model học ranh giới văn bản."""
+    # Dùng list closure để lưu vết các token còn dư từ batch trước truyền sang batch sau
+    remainder = []
 
     def group_texts(examples):
+        nonlocal remainder
         ids_lists = examples["input_ids"]
-        if eos_token_id is not None:
-            concatenated = []
-            for ids in ids_lists:
-                concatenated.extend(ids)
-                concatenated.append(eos_token_id)
-        else:
-            concatenated = [i for ids in ids_lists for i in ids]
-
+        
+        # Nối phần dư cũ với toàn bộ dữ liệu của batch mới
+        concatenated = remainder + [i for ids in ids_lists for i in ids + ([eos_token_id] if eos_token_id is not None else [])]
+        
         total_len = (len(concatenated) // block_size) * block_size
-        if total_len == 0:
+        
+        if total_len > 0:
+            result = [concatenated[i : i + block_size] for i in range(0, total_len, block_size)]
+            # Giữ lại phần thừa cuối cùng (< block_size) cho lần gọi tiếp theo
+            remainder = concatenated[total_len:]
+            return {"input_ids": result}
+        else:
+            # Nếu vẫn chưa đủ 2048 tokens, tích lũy tiếp và trả về danh sách trống tạm thời
+            remainder = concatenated
             return {"input_ids": []}
-
-        result = [concatenated[i:i + block_size] for i in range(0, total_len, block_size)]
-        return {"input_ids": result}
 
     return group_texts
 
