@@ -90,7 +90,7 @@ class TrainConfig:
     # DatasetStateCallback trong train.py) — num_workers>0 khiến PyTorch fork
     # tiến trình con giữ bản sao dataset riêng, tiến trình chính không thấy
     # được vị trí thật đã đọc tới đâu.
-    dataloader_num_workers : int = 0
+    dataloader_num_workers : int = 2
 
     hf_repo_id : Optional[str] = None
     hf_token   : Optional[str] = None
