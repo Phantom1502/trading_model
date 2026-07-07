@@ -43,7 +43,9 @@ import re
 from typing import List
 
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
-
+import os
+from tokenizers import Regex, AddedToken
+from tokenizers.pre_tokenizers import Split, Sequence
 
 PRICE_PREFIX = "px"
 
@@ -84,9 +86,33 @@ def build_llama_tokenizer(
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
+    # ==========================================================
+    # CẢI TIẾN 1: TIÊM LUẬT REGEX BẢO VỆ VÀO LÕI RUST (_tokenizer)
+    # ==========================================================
+    backend_tok = tok._tokenizer
+    
+    # Định nghĩa luật cô lập: thấy dạng O_số, H_số... là khoanh vùng lại ngay, cấm xé nhỏ
+    protect_rule = Split(Regex(r"[OHLC]_\d+|<chart>|</chart>"), behavior="isolated")
+    
+    # Kết hợp luật này vào trước chuỗi Pre-tokenizer hiện tại của LLaMA
+    if backend_tok.pre_tokenizer is not None:
+        backend_tok.pre_tokenizer = Sequence([protect_rule, backend_tok.pre_tokenizer])
+    else:
+        backend_tok.pre_tokenizer = protect_rule
+        
+    # ==========================================================
+    # CẢI TIẾN 2: CHUYỂN TOKEN THÀNH KHỐI NGUYÊN TỬ (ATOMIC TOKENS)
+    # ==========================================================
     price_tokens = build_price_tokens(n_price_bins)
+    
+    # Cấu hình AddedToken với single_word=True giúp tăng tốc độ lookup lên tối đa
+    atomic_tokens = [
+        AddedToken(t, single_word=True, lstrip=False, rstrip=False, normalized=False)
+        for t in price_tokens
+    ]
+    
     vocab_before = len(tok)
-    num_added    = tok.add_tokens(price_tokens)
+    num_added    = tok.add_tokens(atomic_tokens)
     vocab_after  = len(tok)
 
     print(f"  Vocab trước: {vocab_before:,} | thêm: {num_added:,} | sau: {vocab_after:,}")
