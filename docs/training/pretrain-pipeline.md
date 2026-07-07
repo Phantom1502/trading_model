@@ -39,15 +39,52 @@ main(cfg)
 - Scheduler: warmup tuyến tính → cosine annealing **with warm restarts**
   (SGDR) theo chu kỳ `lr_decay_cycle_steps`, sàn `lr_min_ratio`.
 - Mixed precision qua `torch.amp.GradScaler` (bật khi CUDA + `mixed_precision=True`).
-- **Gradient accumulation**: loss chia cho `grad_accum` trước khi backward,
-  optimizer step chỉ chạy mỗi `grad_accum` accum-step.
-- `compute_loss`: cross-entropy mặc định, `ignore_index=-100` (padding label).
-- Aux loss: `loss = lm_loss + mod_aux_loss_coef * aux_loss` — coef đọc từ
-  `cfg.model.mod_aux_loss_coef` (mặc định 0.001 nếu không set).
-- `evaluate()`: chạy tối đa `max_batches=50` batch val, không backward.
-- `train_one_chunk()`: vòng lặp train 1 chunk dữ liệu — log định kỳ
-  (`log_every`), eval + benchmark định kỳ (`eval_every`), lưu checkpoint
-  định kỳ (`save_every`) và mỗi khi val_loss cải thiện (`best.pt`).
+- `compute_loss`: cross-entropy, `ignore_index=-100` (padding label),
+  **`reduction="sum"`** (không phải `"mean"`) — xem mục gradient accumulation
+  ngay dưới đây để hiểu vì sao.
+
+### Gradient accumulation — chuẩn hoá theo token, không theo micro-batch
+
+**Đã sửa 1 bug quan trọng** (xem
+`docs/conventions/known-pitfalls.md`): thiết kế trước đây tính loss
+`reduction="mean"` **riêng từng micro-batch** rồi mới cộng dồn gradient
+qua `grad_accum` micro-batch — điều này ngầm giả định mọi micro-batch có
+**cùng số token hợp lệ**. Khi số token hợp lệ (`labels != -100`) khác nhau
+giữa các micro-batch (do độ dài câu khác nhau, padding khác nhau), cách
+tính này cho ra "trung bình của các trung bình" (mean-of-means) thay vì
+trung bình đúng theo token — làm gradient bị lệch trọng số ngầm.
+
+Cách tính mới:
+
+1. `compute_loss()` trả **tổng loss** (`reduction="sum"`) của 1 micro-batch,
+   không chia gì cả.
+2. `_run_accum_window(batches)` tính trước `total_valid_tokens` = tổng số
+   token hợp lệ trên **toàn bộ** `grad_accum` micro-batch trong cửa sổ.
+3. `train_one_batch()` chia `loss_sum` của **micro-batch hiện tại** cho
+   `total_valid_tokens` **của cả cửa sổ** trước khi `.backward()` — đây là
+   mẫu số đúng để mỗi token trong toàn cửa sổ đóng góp trọng số như nhau
+   vào gradient, bất kể nó nằm ở micro-batch nào.
+4. Optimizer step chỉ chạy ở micro-batch **cuối cùng** của cửa sổ
+   (`is_last_in_window=True`), không còn dựa vào đếm `accum_step % grad_accum`
+   như thiết kế cũ.
+5. **Giá trị dùng để log** (`TrainLogger`) vẫn là loss trung bình theo token
+   của **chính micro-batch đó** (`loss_sum / num_tokens_this_batch`) — khác
+   với mẫu số dùng cho gradient (`total_valid_tokens` của cả cửa sổ). Đừng
+   nhầm lẫn 2 mẫu số này khi sửa code — nhầm sẽ khiến số loss hiển thị lệch
+   khoảng `grad_accum` lần so với giá trị thật.
+
+Cửa sổ cuối cùng của mỗi epoch có thể **ngắn hơn** `grad_accum` (nếu số
+batch còn lại không chia hết) — `train_one_chunk()` vẫn chạy nốt cửa sổ
+ngắn này qua `_run_accum_window()` thay vì bỏ qua, để không mất dữ liệu.
+
+- `evaluate()`: cũng đổi sang tính **val loss trung bình theo token** trên
+  toàn bộ token hợp lệ đã sample (`total_loss_sum / total_tokens`), thay vì
+  trung bình đơn giản của các batch loss — nhất quán với cách tính loss
+  train ở trên.
+- `train_one_chunk()`: vòng lặp train 1 chunk dữ liệu, gom micro-batch vào
+  `accum_buffer` tới khi đủ `grad_accum` thì gọi `_run_accum_window()`, sau
+  đó `_maybe_eval_and_save()` kiểm tra `eval_every`/`save_every` để log
+  eval, lưu `best.pt` (khi val_loss cải thiện) và checkpoint định kỳ.
 
 ## PretrainTrainer (`trainer/pretrain.py`)
 
@@ -99,6 +136,15 @@ Chi tiết loader: xem `docs/training/data-loading.md`.
 
 ## Benchmark tích hợp trong training loop
 
-Mỗi lần `eval_every` step: chạy `run_all()` (`benchmark.py`) — 5 chiều
-semantic/entity/fact/language/ood, trọng số weighted → `total`. Log qua
-`log_bench()`. Xem `docs/evaluation/benchmark-suite.md`.
+Mỗi lần `eval_every` step (và ở cuối mỗi chunk): `BaseTrainer` gọi
+`run_all_ict_benchmarks()` (`app/memlm/benchmark_ict.py`) — bộ benchmark
+ICT (Swept/FVG/Shift...), chứ **không phải** `run_all()` tổng quát
+(`benchmark.py`, semantic/entity/fact/language/ood) như thiết kế trước đây.
+Log qua `log_bench()`.
+
+`benchmark.py::run_all()` (xem `docs/evaluation/benchmark-suite.md`) vẫn
+tồn tại và hữu ích để đánh giá thủ công/so sánh checkpoint
+(`python app/memlm/benchmark.py <checkpoint>`), nhưng **không còn được gọi
+tự động** trong vòng lặp train — nếu muốn theo dõi cả 2 bộ benchmark song
+song trong lúc train, cần tự thêm lệnh gọi `run_all()` vào
+`_maybe_eval_and_save()` (hoặc `train_one_chunk()`).

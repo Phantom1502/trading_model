@@ -11,8 +11,15 @@ Subclass override compute_loss() nếu cần loss khác cross-entropy.
 
 CHANGELOG (fix): loss trước đây dùng reduction="mean" theo từng micro-batch,
 khiến các micro-batch được weight sai khi cộng dồn gradient (xem
-BUGFIX_grad_accum_loss_weighting.md). Nay đổi sang reduction="sum" và chuẩn
-hóa theo tổng số token hợp lệ của CẢ cửa sổ accumulation.
+`docs/conventions/known-pitfalls.md`, mục "Gradient accumulation loss
+weighting"). Nay đổi sang reduction="sum" và chuẩn hóa theo tổng số token
+hợp lệ của CẢ cửa sổ accumulation.
+
+Lưu ý: file này là submodule nội bộ của package `app.memlm.trainer`,
+không được thiết kế để chạy trực tiếp (`python trainer/base.py`) — luôn
+được import gián tiếp qua `app.memlm.trainer` hoặc `app.memlm.train`, nên
+không cần bootstrap sys.path (điểm vào — vd `train.py` — đã lo việc đó).
+Xem `docs/conventions/running-from-root.md`.
 """
 
 import math
@@ -22,8 +29,8 @@ import torch.nn.functional as F
 
 from app.memlm.model import causal_mask
 from app.memlm.utils import TrainLogger, log_eval, log_bench, save_checkpoint
-from app.memlm.benchmark import run_all
 from app.memlm.benchmark_ict import run_all_ict_benchmarks
+
 
 class BaseTrainer:
     def __init__(self, cfg, model, tokenizer):

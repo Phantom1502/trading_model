@@ -1,10 +1,25 @@
 # ICT Benchmark
 
-> Xem lưu ý về nguồn thông tin ở đầu `docs/ict/detectors.md` — trang này
-> cũng tổng hợp từ ghi chú thiết kế, chưa đối chiếu trực tiếp với source
-> `benchmark_ict.py`.
+> Xem lưu ý về nguồn thông tin ở đầu `docs/ict/detectors.md` — nội dung
+> chi tiết bên dưới vẫn tổng hợp từ ghi chú thiết kế, chưa đối chiếu trực
+> tiếp với source `benchmark_ict.py`. **Đã xác nhận qua code thật**: điểm
+> tích hợp vào training loop và chữ ký hàm public (xem mục ngay dưới).
 
-File: `benchmark_ict.py`.
+File: `app/memlm/benchmark_ict.py`.
+
+## Tích hợp vào training loop (đã xác nhận qua `trainer/base.py`)
+
+```python
+from app.memlm.benchmark_ict import run_all_ict_benchmarks
+
+bench = run_all_ict_benchmarks(model, tokenizer, cfg, verbose=False, step=global_step)
+```
+
+`BaseTrainer` gọi hàm này mỗi `eval_every` step và ở cuối mỗi chunk
+(`train_one_chunk()`), thay cho `benchmark.py::run_all()` như thiết kế
+trước đây — xem `docs/training/pretrain-pipeline.md`. Chữ ký hàm khớp
+pattern chung của `log_bench()` (`utils/logger.py`): trả về `dict` các
+điểm số dạng `{tên_metric: giá_trị_float}`.
 
 ## Framework
 

@@ -141,3 +141,42 @@ import gián tiếp qua 1 module khác trong tương lai.
 chính trong `if __name__ == "__main__":`, kể cả khi hiện tại chỉ được
 dùng như standalone script — phòng trường hợp sau này có nhu cầu import
 1 hàm từ file đó mà không muốn kích hoạt toàn bộ side-effect.
+
+## 10. Gradient accumulation loss weighting — "mean-of-means" sai lệch trọng số
+
+**Triệu chứng**: không có triệu chứng rõ ràng bên ngoài (không crash, loss
+vẫn giảm) — đây là loại bug **âm thầm**, chỉ ảnh hưởng tinh vi đến chất
+lượng gradient, khó phát hiện qua quan sát thông thường.
+
+**Nguyên nhân**: `compute_loss()` bản cũ dùng `reduction="mean"` **tính
+riêng cho từng micro-batch** trong 1 cửa sổ gradient accumulation, rồi cộng
+dồn (`.backward()`) qua `grad_accum` micro-batch. Cách này ngầm giả định
+mọi micro-batch có **cùng số token hợp lệ** (`labels != -100`). Khi các
+micro-batch có độ dài câu/số token hợp lệ khác nhau (chuyện bình thường do
+padding), phép cộng dồn các "mean" khác mẫu số này cho ra kết quả khác với
+**mean thật** trên toàn bộ token của cả cửa sổ — token trong micro-batch
+có ít token hợp lệ hơn bị **overweight**, và ngược lại.
+
+**Fix đã áp dụng** (`trainer/base.py`):
+1. `compute_loss()` đổi sang `reduction="sum"` (tổng loss thô, không chia).
+2. Trước khi chạy cửa sổ accumulation, tính trước
+   `total_valid_tokens` = tổng token hợp lệ trên **toàn bộ** `grad_accum`
+   micro-batch (`_run_accum_window`).
+3. Mỗi micro-batch chia `loss_sum` của chính nó cho `total_valid_tokens`
+   **của cả cửa sổ** (không phải của riêng nó) trước khi `.backward()` —
+   đây là mẫu số đúng để mọi token trong cả cửa sổ đóng góp trọng số như
+   nhau vào gradient tổng, bất kể nó rơi vào micro-batch nào.
+4. Giá trị dùng để **log** (hiển thị loss/token cho người xem) vẫn dùng
+   mẫu số riêng của micro-batch đó (`num_tokens_this_batch`), **khác** với
+   mẫu số dùng cho gradient (`total_valid_tokens` của cả cửa sổ) — 2 mẫu số
+   này phục vụ 2 mục đích khác nhau, không được gộp chung.
+5. `evaluate()` (val loss) cũng đổi sang tính token-weighted trên toàn bộ
+   batch đã sample, thay vì trung bình đơn giản của các batch-loss.
+
+**Bài học chung**: bất kỳ khi nào loss được tính theo `"mean"` rồi mới
+cộng dồn qua nhiều nhóm dữ liệu có **kích thước (số token/sample) khác
+nhau** — dù là gradient accumulation, multi-GPU all-reduce, hay multi-task
+loss — luôn kiểm tra xem có đang vô tình tính "mean của các mean" (sai) hay
+"mean thật trên toàn bộ" (đúng). Cách an toàn nhất: tính `sum` ở cấp nhỏ
+nhất, cộng dồn `sum` và tổng mẫu số ở cấp ngoài, rồi chia 1 lần duy nhất ở
+cuối.
