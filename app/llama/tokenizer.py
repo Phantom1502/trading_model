@@ -78,6 +78,24 @@ def build_llama_tokenizer(
 
     print(f"  Loading base tokenizer: {base_tokenizer_dir}")
     tok = AutoTokenizer.from_pretrained(base_tokenizer_dir)
+
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+
+    price_tokens = build_price_tokens(n_price_bins)
+    vocab_before = len(tok)
+    num_added    = tok.add_tokens(price_tokens)
+    vocab_after  = len(tok)
+
+    print(f"  Vocab trước: {vocab_before:,} | thêm: {num_added:,} | sau: {vocab_after:,}")
+    assert vocab_after == vocab_before + num_added, (
+        "Số token thêm không khớp — có thể base tokenizer đã chứa sẵn một số "
+        "price token trùng tên (không nên xảy ra với base BPE mới train)."
+    )
+
+    os.makedirs(output_dir, exist_ok=True)
+    tok.save_pretrained(output_dir)
+    print(f"  ✓ Đã lưu tokenizer (BPE + price token thật) → {output_dir}/")
     return tok
 
 
