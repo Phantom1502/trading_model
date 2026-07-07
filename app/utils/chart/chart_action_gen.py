@@ -1,7 +1,35 @@
+"""
+chart_action_gen.py — Demo/script sinh dataset (chart, action, sl, tp) -> result
+
+Giả định chạy/import từ THƯ MỤC GỐC project. Nếu chạy trực tiếp
+(`python app/utils/chart/chart_action_gen.py`), khối bootstrap bên dưới tự
+thêm thư mục gốc vào sys.path để các import `app.utils.chart....` hoạt động.
+
+Lưu ý: bản hợp nhất mới hơn của logic này nằm ở
+`app/utils/chart/data_pipeline.py` (class `ActionDataGen`, có
+`build_to_parquet` streaming) — xem `docs/data-pipeline/actions/build-action-dataset.md`.
+File này giữ lại cho tương thích ngược / dùng như script độc lập.
+"""
+
+import os
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError(
+            "Không tìm thấy thư mục gốc project (thư mục chứa 'app/')."
+        )
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import numpy as np
 import pandas as pd
 from enum import Enum
-from chartcodec import ChartCodec, calculate_atr, M1_SCALE
+from app.utils.chart.chartcodec import ChartCodec, calculate_atr, M1_SCALE
 from collections import defaultdict
 import random
 
@@ -206,21 +234,22 @@ def balance_dataset(samples: list[str]) -> list[str]:
 
     # Lấy theo min count → 1:1:1
     min_count = min(len(v) for v in buckets.values())
-    
+
     balanced = []
     for k in buckets:
         balanced.extend(random.sample(buckets[k], min_count))
-    
+
     random.shuffle(balanced)
     return balanced
 
 # ── Demo ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    df = pd.read_csv(r"data\XAUUSD_1Min.csv")
+    # Đường dẫn dữ liệu — chạy từ thư mục gốc, ví dụ: data/XAUUSD_1Min.csv
+    df = pd.read_csv(os.path.join(_REPO_ROOT, "data", "XAUUSD_1Min.csv"))
     df = df.iloc[:1000]
 
     codec   = ChartCodec(scale=M1_SCALE)
-        
+
     # Xem average move trong 60 candle XAUUSD M1
     df = df.reset_index(drop=True).copy()
     df["__atr__"] = calculate_atr(df, period=100)
@@ -254,7 +283,7 @@ if __name__ == "__main__":
     print("\n── Exit distribution ──")
     for k, v in Counter(exits).items():
         print(f"  {k}: {v} ({v/len(samples)*100:.1f}%)")
-        
+
     balanced = balance_dataset(samples)  # assign kết quả
     print("\n── Balanced dataset ──")
     print(balanced)

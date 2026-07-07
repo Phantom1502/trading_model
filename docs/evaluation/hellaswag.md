@@ -40,8 +40,8 @@ hiệu định hướng, không phải kết luận khoa học chặt chẽ.
 ## Cách chạy
 
 ```bash
-python benchmark_hellaswag.py checkpoints/chunk_10.pt
-python benchmark_hellaswag.py ckpt_10.pt ckpt_50.pt --n-samples 200
+python app/memlm/benchmark_hellaswag.py checkpoints/chunk_10.pt
+python app/memlm/benchmark_hellaswag.py ckpt_10.pt ckpt_50.pt --n-samples 200
 ```
 
 - `--n-samples`: mặc định 10000 khi chạy CLI trực tiếp — giảm xuống

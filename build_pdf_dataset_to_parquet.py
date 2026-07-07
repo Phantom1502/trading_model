@@ -1,55 +1,73 @@
 """
-build_pdf_dataset_to_parquet.py
-================================
-Trích xuất nội dung NGUYÊN VĂN từ một KHO PDF (sách trading, text-based —
-không phải scan ảnh), chunk theo ĐOẠN VĂN (paragraph), và ghi ra Parquet
-CÙNG SCHEMA với dataset nến (text / source / token_length / meta) để có thể
-gộp chung 2 dataset lại train cùng lúc.
+build_dataset_to_parquet.py
+============================
+Sinh dataset pretrain từ file Parquet INPUT lớn (vd 100 nến/dòng, hàng chục nghìn dòng)
+và ghi OUTPUT cũng ra Parquet — xử lý theo CHUNK để không phải load toàn bộ file
+vào RAM một lúc, tránh treo máy / hết RAM khi file quá to.
 
-Khác với dataset nến (sinh text bằng curriculum), dataset này là pretrain
-THUẦN TRÍCH XUẤT — không diễn giải lại, không AI tóm tắt, giữ nguyên văn
-từng đoạn sách.
+Khác với cách làm trước (đọc hết bằng pd.read_parquet() rồi ghép thành 1 chuỗi
+text khổng lồ), script này:
 
-XỬ LÝ THEO CHUNK (giống file nến): mỗi PDF được đọc và xử lý XONG HẲN rồi
-ghi ra ngay, KHÔNG giữ nội dung của nhiều sách trong RAM cùng lúc — an toàn
-cho kho sách có hàng trăm file hoặc vài file rất dày.
+  1. Đọc INPUT theo ROW GROUP bằng pyarrow.parquet.ParquetFile.iter_batches()
+     → mỗi lần chỉ load 1 phần nhỏ vào RAM, không phải toàn bộ file.
+  2. Với mỗi batch nhỏ, cắt random các đoạn con (20-30 nến) và sinh curriculum text.
+  3. Ghi kết quả ra OUTPUT bằng pyarrow.parquet.ParquetWriter, APPEND theo từng
+     chunk → không giữ toàn bộ output trong RAM.
 
-CÁCH TÁCH ĐOẠN VĂN:
-    pdftotext -layout giữ lại khoảng trống (2+ dòng trống liên tiếp) giữa
-    các đoạn văn thật trong PDF gốc. Script này:
-      1. Trích text từng trang bằng pdfplumber (text-based PDF).
-      2. Ghép text toàn bộ sách lại (giữ ranh giới trang để biết page_number).
-      3. Tách thành đoạn văn bằng regex trên 2+ dòng trống liên tiếp.
-      4. Trong mỗi đoạn, NỐI các dòng bị word-wrap lại thành 1 dòng liên tục
-         (xuống dòng giữa câu là artifact của PDF, không phải ngắt ý thật).
-      5. Lọc bỏ đoạn quá ngắn (header/footer/số trang rác).
+SCHEMA OUTPUT (cố định, khớp đúng schema model đang dùng để load dữ liệu):
 
-SCHEMA OUTPUT (giống hệt file nến để gộp chung dataset):
-    text          : string — nguyên văn 1 đoạn văn từ sách
-    source        : string — tên file PDF nguồn (vd "price_action_basics.pdf")
-    token_length  : int64  — luôn = 0 (không tokenize ở bước này)
-    meta          : string — JSON: {"page_number", "paragraph_index", "char_length"}
+    text          : string  — nội dung pretrain (curriculum text)
+    source        : string  — tên nguồn dữ liệu gốc (vd "XAUUSD_1Min"), truyền
+                              vào qua tham số `source_name`, KHÔNG suy ra từ data
+    token_length  : int64   — luôn = 0. Pipeline này KHÔNG tokenize, không load
+                              tokenizer — cột này chỉ giữ chỗ đúng schema, việc đo
+                              độ dài token (nếu cần) làm ở bước load dữ liệu để train,
+                              không làm ở bước sinh dataset.
+    meta          : string  — JSON string chứa toàn bộ metadata sinh sample:
+                              {"source_chart_index", "slice_start", "slice_end",
+                               "num_candles", "num_layers"}
 
-Yêu cầu: pip install pdfplumber pyarrow
+Yêu cầu: pip install pyarrow
+
+Giả định chạy/import từ THƯ MỤC GỐC project. Nếu chạy trực tiếp
+(`python app/utils/build_dataset_to_parquet.py ...`), khối bootstrap bên
+dưới tự thêm thư mục gốc vào sys.path.
 
 Cách dùng:
-    python build_pdf_dataset_to_parquet.py \\
-        --input-dir data/books \\
-        --output data/pdf_pretrain_dataset.parquet \\
-        --min-paragraph-len 80
+    python app/utils/build_dataset_to_parquet.py \\
+        --input data/chart_XAUUSD_dataset_1Min.parquet \\
+        --output data/curriculum_pretrain_dataset.parquet \\
+        --source-name XAUUSD_1Min \\
+        --slices-per-chart 4 \\
+        --batch-size 2000
 """
 
 import argparse
-import glob
 import json
 import os
-import re
-import statistics
+import random
+import sys
 from typing import Iterator, List, Optional
 
-import pdfplumber
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError(
+            "Không tìm thấy thư mục gốc project (thư mục chứa 'app/')."
+        )
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from app.utils.chart.candle_parser import CandleParser
+from app.utils.chart.curriculum_generator import CurriculumGenerator
 from app.memlm.tokenizer import VietnameseTokenizer
 
+# pyarrow chỉ cần cho phần đọc/ghi Parquet (iter_input_batches, build_dataset_to_parquet).
+# Import trễ (lazy) để generate_samples_from_charts() vẫn test/dùng được độc lập
+# ngay cả trên máy chưa cài pyarrow.
 try:
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -58,6 +76,16 @@ except ImportError:
     _HAS_PYARROW = False
 
 
+# Đường dẫn tokenizer mặc định — LUÔN tính từ _REPO_ROOT (thư mục gốc project,
+# tự tìm ở bootstrap phía trên), KHÔNG dùng os.path.dirname(__file__) trực
+# tiếp — vì file này nằm ở app/utils/, không phải ở gốc, nên
+# dirname(__file__) == ".../app/utils", và nối thêm "app/memlm/..." vào đó
+# sẽ ra đường dẫn sai (".../app/utils/app/memlm/..."). Đây là bug đã sửa.
+_DEFAULT_TOKENIZER_PATH = os.path.join(_REPO_ROOT, "app", "memlm", "custom_tokenizer")
+
+
+# Schema cố định để mọi row-group ghi ra đều cùng kiểu dữ liệu,
+# tránh lỗi schema-mismatch khi pyarrow tự suy luận kiểu theo từng batch.
 def _build_schema():
     return pa.schema([
         ("text",         pa.string()),
@@ -68,220 +96,213 @@ def _build_schema():
 
 
 # ══════════════════════════════════════════════════════════════════
-# TRÍCH XUẤT ĐOẠN VĂN THEO TỪNG TRANG (dựa vào KHOẢNG CÁCH DỌC giữa dòng)
+# SINH SAMPLE TỪ 1 BATCH CHART (list[str])
 # ══════════════════════════════════════════════════════════════════
-#
-# LƯU Ý KỸ THUẬT: pdfplumber.extract_text() KHÔNG giữ lại dòng trống giữa
-# các đoạn văn (toàn bộ text bị nối thành các dòng liên tục, mất thông tin
-# "đoạn nào kết thúc ở đâu"). Vì vậy KHÔNG thể tách đoạn bằng cách tìm
-# blank-line trên text đã extract.
-#
-# Giải pháp đáng tin cậy hơn: dùng extract_text_lines(), mỗi dòng có tọa độ
-# (top, bottom). Khoảng cách dọc (gap) giữa 2 dòng LIÊN TIẾP trong cùng 1
-# đoạn văn là ĐỀU NHAU (line-height bình thường, vd ~3pt), còn khoảng cách
-# giữa đoạn này và đoạn sau LUÔN LỚN HƠN RÕ RỆT (vd ~20pt). Do đó:
-#   1. Tính tất cả các gap giữa dòng liên tiếp trong trang.
-#   2. Lấy gap TRUNG VỊ (median) làm gap "bình thường trong dòng".
-#   3. Nếu gap > median * threshold_ratio → đó là ranh giới đoạn văn mới.
 
-def split_page_into_paragraphs(
-    page: "pdfplumber.page.Page",
-    gap_threshold_ratio: float = 1.8,
-) -> List[str]:
+def generate_samples_from_charts(
+    raw_charts: List[str],
+    source_name: str = "unknown",
+    slices_per_chart: int = 4,
+    min_slice_len: int = 20,
+    max_slice_len: int = 30,
+    curriculum_mode: str = "random",
+    min_layers: int = 2,
+    max_layers: Optional[int] = None,
+    swing_window: int = 2,
+    rng: Optional[random.Random] = None,
+    chart_index_offset: int = 0,
+    tokenizer: Optional[VietnameseTokenizer] = None,
+) -> List[dict]:
     """
-    Tách 1 trang PDF thành các đoạn văn dựa trên khoảng cách dọc giữa dòng.
+    Sinh list các record (dict) từ 1 batch chart thô, đúng schema:
+        text, source, token_length, meta
+
+    `token_length` luôn = 0 (không tokenize ở bước sinh dataset), TRỪ KHI
+    một `tokenizer` được truyền vào — khi đó `token_length` sẽ được tính
+    thật.
+
+    `meta` là JSON string gói lại slice_start/slice_end/num_candles/num_layers/
+    source_chart_index — giữ thông tin debug/truy vấn mà không cần thêm cột.
 
     Parameters
     ----------
-    gap_threshold_ratio : nếu gap giữa 2 dòng > median_gap * ratio này,
-                          coi đó là ranh giới đoạn văn mới.
+    chart_index_offset : để đánh số `source_chart_index` đúng và liên tục
+                          across nhiều batch (vd batch thứ N thì offset = N * batch_size).
+    tokenizer           : nếu truyền vào, dùng để tính `token_length` thật.
+                          NÊN khởi tạo 1 LẦN ở caller (build_dataset_to_parquet)
+                          và truyền vào đây — KHÔNG tự khởi tạo tokenizer mới
+                          mỗi lần gọi hàm này (tốn thời gian load lại từ đĩa
+                          mỗi batch một cách không cần thiết).
     """
-    lines = page.extract_text_lines()
-    if not lines:
-        return []
+    rng = rng or random
+    records: List[dict] = []
 
-    if len(lines) == 1:
-        text = lines[0]["text"].strip()
-        return [text] if text else []
+    for local_idx, raw in enumerate(raw_charts):
+        chart_idx = chart_index_offset + local_idx
+        base_parser = CandleParser(raw, swing_window=swing_window)
+        n = len(base_parser)
 
-    gaps = [lines[i]["top"] - lines[i - 1]["bottom"] for i in range(1, len(lines))]
-    positive_gaps = [g for g in gaps if g > 0]
-    median_gap = statistics.median(positive_gaps) if positive_gaps else 1.0
-    threshold = max(median_gap * gap_threshold_ratio, median_gap + 2.0)
-
-    paragraphs: List[str] = []
-    current_lines: List[str] = [lines[0]["text"]]
-
-    for i in range(1, len(lines)):
-        gap = lines[i]["top"] - lines[i - 1]["bottom"]
-        if gap > threshold:
-            joined = re.sub(r"\s+", " ", " ".join(current_lines)).strip()
-            if joined:
-                paragraphs.append(joined)
-            current_lines = [lines[i]["text"]]
+        if n < min_slice_len:
+            sub_ranges = [(0, n)]
         else:
-            current_lines.append(lines[i]["text"])
+            sub_ranges = []
+            for _ in range(slices_per_chart):
+                slice_len = rng.randint(min_slice_len, min(max_slice_len, n))
+                max_start = n - slice_len
+                start = rng.randint(0, max_start)
+                sub_ranges.append((start, start + slice_len))
 
-    joined = re.sub(r"\s+", " ", " ".join(current_lines)).strip()
-    if joined:
-        paragraphs.append(joined)
+        for start, end in sub_ranges:
+            sub_parser = base_parser.slice(start, end)
+            gen = CurriculumGenerator(sub_parser)
 
-    return paragraphs
+            if curriculum_mode == "full":
+                texts_and_layers = [(gen.generate_full_curriculum(), gen.num_layers)]
+            elif curriculum_mode == "layers":
+                # Mỗi tầng là 1 record riêng, mỗi record num_layers = 1
+                texts_and_layers = [(t, 1) for t in gen.generate_layers_separately()]
+            else:  # "random"
+                text = gen.generate_random_subset(
+                    min_layers=min_layers, max_layers=max_layers, rng=rng
+                )
+                texts_and_layers = [(text, text.count("===") // 2)]
 
+            for text, n_layers in texts_and_layers:
+                meta = {
+                    "source_chart_index": chart_idx,
+                    "slice_start":        start,
+                    "slice_end":          end,
+                    "num_candles":        end - start,
+                    "num_layers":         n_layers,
+                }
 
-def extract_paragraphs_per_page(pdf_path: str) -> Iterator[tuple[int, List[str]]]:
-    """
-    Trích đoạn văn của TỪNG TRANG dưới dạng GENERATOR.
-    Yields: (page_number, list_các_đoạn_văn_của_trang_đó)
-    """
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_num, page in enumerate(pdf.pages, start=1):
-            paragraphs = split_page_into_paragraphs(page)
-            
-            if paragraphs:
-                yield page_num, paragraphs
-            
-            # Mẹo nhỏ cho pdfplumber: Xóa cache của trang vừa dùng xong để ép giải phóng RAM
-            page.flush_cache()
+                token_length = len(tokenizer.encode(text)) if tokenizer else 0
 
+                records.append({
+                    "text":         text,
+                    "source":       source_name,
+                    "token_length": token_length,
+                    "meta":         json.dumps(meta, ensure_ascii=False),
+                })
 
-def is_likely_noise(paragraph: str, min_len: int = 80) -> bool:
-    """
-    Lọc đoạn khả năng là rác: header/footer/số trang/đoạn quá ngắn.
-    - Quá ngắn (dưới min_len ký tự).
-    - Tỷ lệ chữ cái quá thấp so với tổng độ dài (bảng số liệu lẫn vào text).
-    """
-    if len(paragraph) < min_len:
-        return True
-
-    alpha_count = sum(1 for ch in paragraph if ch.isalpha())
-    if alpha_count / max(len(paragraph), 1) < 0.5:
-        return True
-
-    return False
+    return records
 
 
 # ══════════════════════════════════════════════════════════════════
-# SINH RECORD TỪ 1 FILE PDF (đúng schema text/source/token_length/meta)
-# ══════════════════════════════════════════════════════════════════
+# XỬ LÝ FILE PARQUET LỚN THEO CHUNK (đọc + sinh + ghi)
+# ══════════════════════════════════════════════════════════════
 
-def generate_records_from_pdf(
-    pdf_path: str,
-    tokenizer: Optional[VietnameseTokenizer] = None,
-    min_paragraph_len: int = 80,
-    source_name: Optional[str] = None,
-) -> Iterator[dict]:
+def iter_input_batches(
+    input_path: str,
+    text_column: str = "text",
+    batch_size: int = 2000,
+) -> Iterator[List[str]]:
     """
-    Nhận yield từ từng trang PDF, xử lý và yield tiếp ra ngoài.
-    RAM luôn bằng phẳng!
-    """
-    source_name = source_name or os.path.basename(pdf_path)
-    paragraph_index = 0
-
-    # Lặp trực tiếp từ generator của từng trang
-    for page_number, paragraphs in extract_paragraphs_per_page(pdf_path):
-        for paragraph in paragraphs:
-            if is_likely_noise(paragraph, min_len=min_paragraph_len):
-                continue
-
-            token_length = 0
-            if tokenizer:
-                token_length = len(tokenizer.encode(paragraph))
-
-            meta = {
-                "page_number":     page_number,
-                "paragraph_index": paragraph_index,
-                "char_length":     len(paragraph),
-            }
-            
-            yield {
-                "text":         paragraph,
-                "source":       source_name,
-                "token_length": token_length,
-                "meta":         json.dumps(meta, ensure_ascii=False),
-            }
-            paragraph_index += 1
-
-
-# XỬ LÝ KHO PDF (nhiều file), GHI RA PARQUET THEO TỪNG FILE
-# ══════════════════════════════════════════════════════════════════
-
-def iter_pdf_paths(input_dir: str, pattern: str = "*.pdf") -> Iterator[str]:
-    """Liệt kê đường dẫn PDF trong thư mục (không đọc nội dung)."""
-    search_pattern = os.path.join(input_dir, "**", pattern)
-    for path in sorted(glob.glob(search_pattern, recursive=True)):
-        yield path
-
-
-def build_pdf_dataset_to_parquet(
-    input_dir: str,
-    output_path: str,
-    tokenizer: Optional[VietnameseTokenizer] = None,
-    min_paragraph_len: int = 80,
-    pattern: str = "*.pdf",
-) -> int:
-    """
-    Xử lý TOÀN BỘ kho PDF bằng cơ chế Streaming hoàn chỉnh.
-    RAM luôn duy trì ở mức tối thiểu bất kể file lớn hay nhỏ.
+    Đọc file Parquet INPUT theo từng batch nhỏ (không load hết file vào RAM).
+    Mỗi lần yield ra 1 list các chuỗi chart thô (cột `text_column`).
     """
     if not _HAS_PYARROW:
-        raise ImportError("Cần cài pyarrow để ghi Parquet: pip install pyarrow")
+        raise ImportError(
+            "Cần cài pyarrow để đọc/ghi Parquet: pip install pyarrow"
+        )
+    pf = pq.ParquetFile(input_path)
+    for record_batch in pf.iter_batches(batch_size=batch_size, columns=[text_column]):
+        # to_pylist() chỉ convert batch nhỏ này, không phải toàn bộ file
+        yield record_batch.column(text_column).to_pylist()
 
+
+def build_dataset_to_parquet(
+    input_path: str,
+    output_path: str,
+    source_name: str = "unknown",
+    text_column: str = "text",
+    batch_size: int = 2000,          # số dòng input đọc mỗi lần (không phải số sample output)
+    slices_per_chart: int = 4,
+    min_slice_len: int = 20,
+    max_slice_len: int = 30,
+    curriculum_mode: str = "random",
+    min_layers: int = 2,
+    max_layers: Optional[int] = None,
+    swing_window: int = 2,
+    seed: Optional[int] = None,
+    tokenizer_path: Optional[str] = None,
+) -> int:
+    """
+    Đọc input_path theo chunk, sinh dataset, ghi APPEND ra output_path (parquet),
+    đúng schema: text / source / token_length / meta.
+
+    Vì xử lý theo chunk, RAM sử dụng chỉ tỉ lệ với `batch_size`, KHÔNG tỉ lệ với
+    tổng số dòng trong file input — an toàn cho file vài GB hoặc hàng triệu dòng.
+
+    Parameters
+    ----------
+    source_name : giá trị ghi vào cột `source` cho TẤT CẢ record sinh ra từ
+                  input_path này (vd "XAUUSD_1Min"). Đặt cố định theo tham số,
+                  không suy luận từ tên file hay nội dung.
+    tokenizer_path : path tới custom tokenizer. Mặc định `_DEFAULT_TOKENIZER_PATH`
+                  (app/memlm/custom_tokenizer, resolve theo thư mục gốc project).
+                  Tokenizer được khởi tạo **1 LẦN** ở đây, không phải mỗi batch.
+
+    Returns
+    -------
+    int — tổng số sample (record) đã sinh và ghi ra output_path.
+    """
+    if not _HAS_PYARROW:
+        raise ImportError(
+            "Cần cài pyarrow để đọc/ghi Parquet: pip install pyarrow"
+        )
+
+    tok_path = tokenizer_path or _DEFAULT_TOKENIZER_PATH
+    print(f"Loading tokenizer: {tok_path}")
+    tokenizer = VietnameseTokenizer(pretrained_name=tok_path)
+    print(f"Vocab size (BPE base + price): {tokenizer.vocab_size:,}")
+    print(f"  BPE base   : {len(tokenizer.tokenizer):,}")
+    print(f"  Price vocab: {len(tokenizer.price_vocab):,}\n")
+
+    rng    = random.Random(seed) if seed is not None else random
     schema = _build_schema()
+
     writer: Optional[pq.ParquetWriter] = None
-    total_records = 0
+    total_samples = 0
 
     try:
-        for pdf_path in iter_pdf_paths(input_dir, pattern=pattern):
-            # Try...except bao quanh TỪNG file để file này lỗi không làm sập cả quá trình
-            try:
-                record_generator = generate_records_from_pdf(
-                    pdf_path, tokenizer=tokenizer, min_paragraph_len=min_paragraph_len
-                )
-                
-                current_chunk = []
-                file_records_count = 0
-                
-                for record in record_generator:
-                    current_chunk.append(record)
+        for batch_idx, raw_charts in enumerate(
+            iter_input_batches(input_path, text_column=text_column, batch_size=batch_size)
+        ):
+            records = generate_samples_from_charts(
+                raw_charts,
+                source_name=source_name,
+                slices_per_chart=slices_per_chart,
+                min_slice_len=min_slice_len,
+                max_slice_len=max_slice_len,
+                curriculum_mode=curriculum_mode,
+                min_layers=min_layers,
+                max_layers=max_layers,
+                swing_window=swing_window,
+                rng=rng,
+                chart_index_offset=batch_idx * batch_size,
+                tokenizer=tokenizer,
+            )
 
-                    # Cứ gom đủ 5000 đoạn văn thì ghi xuống đĩa để giải phóng RAM
-                    if len(current_chunk) >= 100:
-                        table = pa.Table.from_pylist(current_chunk, schema=schema)
-                        if writer is None:
-                            writer = pq.ParquetWriter(output_path, schema, compression="snappy")
-                        writer.write_table(table)
-                        
-                        file_records_count += len(current_chunk)
-                        total_records += len(current_chunk)
-                        current_chunk = []  # Giải phóng bộ nhớ đệm ngay
+            if not records:
+                continue
 
-                # Ghi nốt phần dư còn lại của file này
-                if current_chunk:
-                    table = pa.Table.from_pylist(current_chunk, schema=schema)
-                    if writer is None:
-                        writer = pq.ParquetWriter(output_path, schema, compression="snappy")
-                    writer.write_table(table)
-                    file_records_count += len(current_chunk)
-                    total_records += len(current_chunk)
+            table = pa.Table.from_pylist(records, schema=schema)
 
-                # In tiến độ để theo dõi trực quan
-                if file_records_count == 0:
-                    print(f"⚠️  {os.path.basename(pdf_path)}: không trích được đoạn văn nào.")
-                else:
-                    print(f"[{os.path.basename(pdf_path)}] +{file_records_count} đoạn văn | tổng tích lũy: {total_records}")
+            if writer is None:
+                writer = pq.ParquetWriter(output_path, schema, compression="snappy")
+            writer.write_table(table)
 
-            except Exception as e:
-                print(f"❌ Lỗi khi xử lý file {pdf_path}: {e}")
-                continue  # Bỏ qua file lỗi, chạy tiếp file sau
+            total_samples += len(records)
+            print(f"[batch {batch_idx}] +{len(records)} sample "
+                  f"(từ {len(raw_charts)} dòng input) | tổng cộng: {total_samples}")
 
     finally:
-        # Luôn đảm bảo đóng writer dù có crash hệ thống nửa chừng
         if writer is not None:
             writer.close()
 
-    print(f"\n✅ Hoàn tất. Tổng {total_records} đoạn văn từ kho PDF → {output_path}")
-    return total_records
+    print(f"\n✅ Hoàn tất. Tổng {total_samples} sample → {output_path}")
+    return total_samples
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -289,20 +310,35 @@ def build_pdf_dataset_to_parquet(
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    tok_path = os.path.join(base_dir, "app", "memlm", "custom_tokenizer")
-    print(f"Testing tokenizer: {tok_path}\n")
+    parser = argparse.ArgumentParser(description="Sinh dataset pretrain từ Parquet lớn, ghi ra Parquet, xử lý theo chunk.")
+    parser.add_argument("--input",  required=True, help="Đường dẫn file parquet INPUT (cột 'text' chứa chart thô)")
+    parser.add_argument("--output", required=True, help="Đường dẫn file parquet OUTPUT")
+    parser.add_argument("--source-name", default="unknown", help="Giá trị cột 'source' cho mọi record sinh ra")
+    parser.add_argument("--text-column", default="text")
+    parser.add_argument("--batch-size", type=int, default=2000, help="Số dòng input đọc mỗi lần (RAM tỉ lệ với số này)")
+    parser.add_argument("--slices-per-chart", type=int, default=4)
+    parser.add_argument("--min-slice-len", type=int, default=20)
+    parser.add_argument("--max-slice-len", type=int, default=30)
+    parser.add_argument("--curriculum-mode", default="random", choices=["full", "layers", "random"])
+    parser.add_argument("--min-layers", type=int, default=2)
+    parser.add_argument("--max-layers", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--tokenizer-path", type=str, default=None,
+                         help="Path custom tokenizer (mặc định: app/memlm/custom_tokenizer ở gốc project)")
+    args = parser.parse_args()
 
-    tok = VietnameseTokenizer(pretrained_name=tok_path)
-    print(f"Vocab size (BPE base + price): {tok.vocab_size:,}")
-    print(f"  BPE base  : {len(tok.tokenizer):,}")
-    print(f"  Price vocab: {len(tok.price_vocab):,}")
-    print()
-
-    build_pdf_dataset_to_parquet(
-        input_dir=r"data\books",
-        output_path=r"data\trading_book.parquet",
-        tokenizer=tok,
-        min_paragraph_len=80,
-        pattern="*.pdf",
+    build_dataset_to_parquet(
+        input_path=args.input,
+        output_path=args.output,
+        source_name=args.source_name,
+        text_column=args.text_column,
+        batch_size=args.batch_size,
+        slices_per_chart=args.slices_per_chart,
+        min_slice_len=args.min_slice_len,
+        max_slice_len=args.max_slice_len,
+        curriculum_mode=args.curriculum_mode,
+        min_layers=args.min_layers,
+        max_layers=args.max_layers,
+        seed=args.seed,
+        tokenizer_path=args.tokenizer_path,
     )

@@ -4,23 +4,37 @@ generate.py — Sinh văn bản từ model đã train
 Sliding window đơn giản: khi context vượt max_seq thì cắt phần đầu,
 không cần prefill hay flush vào memory.
 
+Giả định chạy/import từ THƯ MỤC GỐC project (xem ghi chú đầu file
+train.py để biết 3 cách chạy hợp lệ).
+
 Usage:
-    from generate import load_model_for_inference, generate
+    from app.memlm.generate import load_model_for_inference, generate
 
     model, tokenizer, cfg = load_model_for_inference("checkpoints/best.pt")
     print(generate(model, tokenizer, cfg, "Trí tuệ nhân tạo là"))
 """
 
+import os
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError(
+            "Không tìm thấy thư mục gốc project (thư mục chứa 'app/')."
+        )
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import torch
 import torch.nn.functional as F
 
-from .model import causal_mask
+from app.memlm.model import causal_mask
 
-from .config import get_100m_config, ModelConfig
-from .tokenizer import load_tokenizer
-from .model import build_model
-from .utils import load_checkpoint
-import torch as _torch
+
 # ══════════════════════════════════════════════════════════════════════════
 # Sampling
 # ══════════════════════════════════════════════════════════════════════════
@@ -116,6 +130,11 @@ def load_model_for_inference(checkpoint_path: str, device: str = None, fallback_
     Load model + tokenizer + config từ checkpoint.
     Đọc model_cfg đã lưu trong checkpoint để build đúng kiến trúc lúc train.
     """
+    from app.memlm.config import get_100m_config, ModelConfig
+    from app.memlm.tokenizer import load_tokenizer
+    from app.memlm.model import build_model
+    from app.memlm.utils import load_checkpoint
+    import torch as _torch
 
     device = device or ("cuda" if _torch.cuda.is_available() else "cpu")
     cfg    = fallback_cfg or get_100m_config()
@@ -144,7 +163,6 @@ def load_model_for_inference(checkpoint_path: str, device: str = None, fallback_
 # ══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    import sys
     ckpt_path = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/best.pt"
 
     model, tokenizer, cfg = load_model_for_inference(ckpt_path)

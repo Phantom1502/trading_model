@@ -19,11 +19,15 @@ nghĩa khi load lại. Lưu bản riêng vào thư mục cục bộ (custom_toke
       train MỚI (train lại từ đầu — đúng theo yêu cầu của bạn).
 
 ────────────────────────────────────────────────────────────────────────────
-CÁCH DÙNG:
+CÁCH DÙNG (chạy từ THƯ MỤC GỐC project):
 
-    python scripts/add_custom_tokens.py \
-        --new-tokens-file my_trading_tokens.txt \
-        --output-dir custom_tokenizer
+    python app/memlm/scripts/add_custom_tokens.py \
+        --new-tokens-file app/memlm/scripts/example_trading_tokens.txt \
+        --output-dir app/memlm/custom_tokenizer
+
+Mặc định --output-dir là "app/memlm/custom_tokenizer" (tính theo vị trí
+file này, không phụ thuộc cwd — trước đây default là chuỗi tương đối
+"custom_tokenizer", chỉ đúng nếu chạy từ trong app/memlm/).
 
 File my_trading_tokens.txt: mỗi dòng một token, ví dụ:
 
@@ -36,7 +40,7 @@ File my_trading_tokens.txt: mỗi dòng một token, ví dụ:
     nến_doji
     ...
 
-Sau khi chạy xong, thư mục `custom_tokenizer/` chứa đầy đủ file tokenizer
+Sau khi chạy xong, thư mục output chứa đầy đủ file tokenizer
 (vocab.txt, tokenizer_config.json, ...) — load lại y hệt cách load một
 tokenizer HuggingFace bình thường, qua AutoTokenizer.from_pretrained(path).
 ────────────────────────────────────────────────────────────────────────────
@@ -45,6 +49,14 @@ tokenizer HuggingFace bình thường, qua AutoTokenizer.from_pretrained(path).
 import argparse
 import os
 from transformers import AutoTokenizer
+
+
+# Đường dẫn output mặc định — tính theo vị trí file này (app/memlm/scripts/),
+# không phụ thuộc cwd lúc chạy script.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))            # app/memlm/scripts
+_DEFAULT_OUTPUT_DIR = os.path.normpath(
+    os.path.join(_SCRIPT_DIR, "..", "custom_tokenizer")              # app/memlm/custom_tokenizer
+)
 
 
 def add_custom_tokens(
@@ -112,8 +124,8 @@ def main():
         help="File text chứa danh sách token mới, mỗi dòng một token",
     )
     parser.add_argument(
-        "--output-dir", type=str, default="custom_tokenizer",
-        help="Thư mục lưu tokenizer đã mở rộng",
+        "--output-dir", type=str, default=_DEFAULT_OUTPUT_DIR,
+        help=f"Thư mục lưu tokenizer đã mở rộng (default {_DEFAULT_OUTPUT_DIR})",
     )
     args = parser.parse_args()
 

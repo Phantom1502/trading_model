@@ -102,3 +102,42 @@ tổng quát) — chỉ tắt khi chắc chắn 100% dữ liệu chỉ chứa ch
 Xem chi tiết ở `docs/conventions/testing.md` — tóm tắt: mọi label dùng làm
 "đáp án đúng" (training sample hay benchmark) phải bắt nguồn từ detector
 chạy thật, không viết tay.
+
+## 8. Đường dẫn phụ tính sai cấp thư mục khi copy-paste giữa các script
+
+**Vấn đề cụ thể đã phát hiện**: `app/utils/build_dataset_to_parquet.py` có
+đoạn tính đường dẫn tokenizer copy từ 1 script khác nằm ở **thư mục gốc**
+(`gen_trading_data.py`):
+
+```python
+base_dir = os.path.dirname(os.path.abspath(__file__))
+tok_path = os.path.join(base_dir, "app", "memlm", "custom_tokenizer")
+```
+
+Đoạn code đúng khi `__file__` nằm ở gốc project, nhưng
+`build_dataset_to_parquet.py` lại nằm ở `app/utils/` — nên `base_dir` đã
+là `.../app/utils`, và nối thêm `"app/memlm/..."` cho ra đường dẫn sai
+`.../app/utils/app/memlm/custom_tokenizer` (không tồn tại).
+
+**Bài học**: khi copy 1 đoạn tính `base_dir`/đường dẫn phụ giữa các file
+ở **cấp thư mục khác nhau**, không copy nguyên văn — phải tính lại số
+cấp `dirname()` cần thiết, hoặc tốt hơn là dùng chung 1 hàm tìm thư mục
+gốc project (đi ngược lên tới khi thấy `app/`) thay vì hard-code số cấp —
+xem `docs/conventions/running-from-root.md` cho pattern `_find_repo_root`
+hiện đang dùng.
+
+**Đã sửa** cùng đợt chuyển toàn bộ sang chạy từ thư mục gốc — xem
+`docs/conventions/running-from-root.md`.
+
+## 9. Script tự chạy code ở module scope thay vì `if __name__ == "__main__":`
+
+**Vấn đề**: `app/utils/chart_generate_ds.py` (bản trước khi sửa) gọi
+`builder.build_from_file(...)` ngay ở top-level của module — nghĩa là chỉ
+cần `import` file này (dù không cố ý chạy nó) cũng sẽ **tự động thực thi**
+toàn bộ pipeline sinh dataset. Đây là side-effect nguy hiểm nếu file bị
+import gián tiếp qua 1 module khác trong tương lai.
+
+**Quy tắc**: mọi script sinh dữ liệu/chạy pipeline nên bọc phần thực thi
+chính trong `if __name__ == "__main__":`, kể cả khi hiện tại chỉ được
+dùng như standalone script — phòng trường hợp sau này có nhu cầu import
+1 hàm từ file đó mà không muốn kích hoạt toàn bộ side-effect.

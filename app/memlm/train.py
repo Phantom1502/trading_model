@@ -1,25 +1,54 @@
 """
 train.py — Entry point chạy pretrain
 ========================================
-Usage trên Colab:
+QUAN TRỌNG: file này giả định được chạy/import từ THƯ MỤC GỐC project
+(thư mục chứa `app/`), theo 1 trong 3 cách:
 
-    !pip install transformers datasets accelerate -q
-    !python train.py
+    # 1. Import như package trong notebook (khuyến nghị cho Colab)
+    from app.memlm.config import get_110m_config
+    from app.memlm.train import main
+    main(get_110m_config())
 
-Hoặc trong notebook cell:
+    # 2. Chạy trực tiếp bằng đường dẫn file (vẫn từ thư mục gốc)
+    python app/memlm/train.py
 
-    from config import get_100m_config
-    from train import main
-    main(get_100m_config())
+    # 3. Chạy như module (cách chuẩn nhất, luôn đảm bảo import đúng)
+    python -m app.memlm.train
+
+Khối bootstrap bên dưới (`_REPO_ROOT`) đảm bảo cách (2) hoạt động đúng
+bằng cách tự thêm thư mục gốc vào `sys.path` — không cần thiết cho cách
+(1)/(3) vì khi đó `sys.path` đã có thư mục gốc sẵn (notebook cwd, hoặc
+`python -m` tự thêm cwd), nhưng để nguyên vô hại trong mọi trường hợp.
 """
+
+import os
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError(
+            "Không tìm thấy thư mục gốc project (thư mục chứa 'app/'). "
+            "Kiểm tra lại vị trí file train.py trong repo."
+        )
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import torch
 
-from .config import get_100m_config, get_small_config, get_110m_config
-from .tokenizer import load_tokenizer
-from .dataset import ChunkedWikiLoader, ChunkedVTSNLPLoader, ChunkedParquetLoader, ChunkedMixLoader
-from .model import build_model
-from .trainer import run_pretrain
+from app.memlm.config import get_100m_config, get_small_config, get_110m_config
+from app.memlm.tokenizer import load_tokenizer
+from app.memlm.dataset import (
+    ChunkedWikiLoader,
+    ChunkedVTSNLPLoader,
+    ChunkedParquetLoader,
+    ChunkedMixLoader,
+)
+from app.memlm.model import build_model
+from app.memlm.trainer import run_pretrain
 
 
 def main(cfg=None, start_chunk: int = 0, reset_lr_for_new_round: bool = False):
@@ -47,7 +76,7 @@ def main(cfg=None, start_chunk: int = 0, reset_lr_for_new_round: bool = False):
 
     Lọc parquet theo metadata (filter_fn không serializable — khởi tạo
     loader thủ công rồi truyền vào run_pretrain qua data_loader_gen):
-        from dataset import ChunkedParquetLoader
+        from app.memlm.dataset import ChunkedParquetLoader
         loader = ChunkedParquetLoader(
             cfg, tokenizer, "data/books.parquet",
             filter_fn=lambda s: s.get("genre") == "Lịch sử",
@@ -123,19 +152,14 @@ def main(cfg=None, start_chunk: int = 0, reset_lr_for_new_round: bool = False):
             text_col    =cfg.data.parquet_text_col,
             start_chunk =start_chunk,
         )
-        
-    # ── Thêm vào train.py ────────────────────────────────────────────────────────
-    # Thêm case "mix" vào if/elif chain trong hàm main(), sau case "parquet":
 
     elif cfg.data.source == "mix":
         data_loader_gen = ChunkedMixLoader(cfg, tokenizer, start_chunk=start_chunk)
 
-    # (giữ nguyên else raise ValueError bên dưới)
-
     else:
         raise ValueError(
             f"cfg.data.source='{cfg.data.source}' không hợp lệ — "
-            f"chỉ hỗ trợ 'wikipedia', 'vtsnlp', hoặc 'parquet'"
+            f"chỉ hỗ trợ 'wikipedia', 'vtsnlp', 'parquet', hoặc 'mix'"
         )
 
     # ── Train ──────────────────────────────────────────────────────────────

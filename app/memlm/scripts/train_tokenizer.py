@@ -11,19 +11,23 @@ Thiết kế:
     - Price vocab    : 4098 tokens riêng biệt (regex, nằm ngoài BPE — giữ nguyên)
     - Tổng           : ~20k tokens → phù hợp model nhỏ ~70M params
 
-Chạy trên Colab (1 lần duy nhất):
-    !python scripts/train_tokenizer.py
+Chạy từ THƯ MỤC GỐC project (Colab hay local đều được):
+    !python app/memlm/scripts/train_tokenizer.py
 
 Hoặc tùy chỉnh:
-    !python scripts/train_tokenizer.py \
+    !python app/memlm/scripts/train_tokenizer.py \
         --vocab-size 16000 \
         --wiki-samples 500000 \
-        --vtsnlp-samples 500000 \
-        --output-dir custom_tokenizer
+        --vtsnlp-samples 500000
+
+Mặc định output-dir là "app/memlm/custom_tokenizer" (tính theo vị trí file
+này, KHÔNG phụ thuộc cwd — trước đây default là chuỗi tương đối
+"custom_tokenizer", chỉ đúng nếu cwd = app/memlm/; giờ chạy từ gốc vẫn ra
+đúng chỗ). Có thể override bằng --output-dir nếu muốn.
 
 Sau khi chạy xong, cập nhật config:
-    cfg.tokenizer.pretrained_name = "custom_tokenizer"
-    # (hoặc đặt TOKENIZER_PATH trong môi trường)
+    cfg.tokenizer.pretrained_name = "app/memlm/custom_tokenizer"
+    # (hoặc đường dẫn tuyệt đối / TOKENIZER_PATH trong môi trường)
 
 ────────────────────────────────────────────────────────────────────────────
 LƯU Ý QUAN TRỌNG:
@@ -46,6 +50,17 @@ from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.processors import ByteLevel as ByteLevelProcessor
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from transformers import PreTrainedTokenizerFast
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Đường dẫn output mặc định — tính theo vị trí file này (app/memlm/scripts/),
+# không phụ thuộc cwd lúc chạy script.
+# ══════════════════════════════════════════════════════════════════════════
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))            # app/memlm/scripts
+_DEFAULT_OUTPUT_DIR = os.path.normpath(
+    os.path.join(_SCRIPT_DIR, "..", "custom_tokenizer")              # app/memlm/custom_tokenizer
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -287,8 +302,8 @@ def parse_args():
                    help="Số sample lấy từ VTSNLP (default 500000)")
     p.add_argument("--min-len",         type=int, default=100,
                    help="Bỏ qua text ngắn hơn N ký tự (default 100)")
-    p.add_argument("--output-dir",      type=str, default="custom_tokenizer",
-                   help="Thư mục lưu tokenizer (default custom_tokenizer)")
+    p.add_argument("--output-dir",      type=str, default=_DEFAULT_OUTPUT_DIR,
+                   help=f"Thư mục lưu tokenizer (default {_DEFAULT_OUTPUT_DIR})")
     p.add_argument("--skip-sanity",     action="store_true",
                    help="Bỏ qua sanity check sau khi train")
     return p.parse_args()

@@ -5,16 +5,22 @@ Files: `app/memlm/train.py`, `app/memlm/trainer/pretrain.py`,
 
 ## Chạy train
 
+Từ **thư mục gốc project** (xem `docs/conventions/running-from-root.md`
+cho quy tắc import/chạy đầy đủ), có 3 cách tương đương:
+
 ```bash
-cd app/memlm
-python train.py
+# Chạy trực tiếp bằng đường dẫn file
+python app/memlm/train.py
+
+# Hoặc chạy như module (cách chuẩn nhất)
+python -m app.memlm.train
 ```
 
 hoặc trong notebook (Colab T4):
 
 ```python
-from config import get_100m_config
-from train import main
+from app.memlm.config import get_100m_config
+from app.memlm.train import main
 
 cfg = get_100m_config()
 main(cfg)

@@ -15,13 +15,19 @@ Tổng vocab = BPE base + price vocab (4098 token: `O/H/L/C × 1024` + `<chart>`
 
 ## Train custom tokenizer
 
+Chạy từ **thư mục gốc project** (xem `docs/conventions/running-from-root.md`):
+
 ```bash
-python scripts/train_tokenizer.py \
+python app/memlm/scripts/train_tokenizer.py \
     --vocab-size 16000 \
     --wiki-samples 500000 \
-    --vtsnlp-samples 500000 \
-    --output-dir custom_tokenizer
+    --vtsnlp-samples 500000
 ```
+
+`--output-dir` mặc định là `app/memlm/custom_tokenizer` — được tính theo
+**vị trí file script**, không phụ thuộc thư mục bạn đang đứng khi gọi
+lệnh (đã sửa; trước đây default là chuỗi tương đối `"custom_tokenizer"`,
+chỉ đúng nếu cwd = `app/memlm/`).
 
 - ByteLevel BPE (`add_prefix_space=False`), train streaming từ
   `wikimedia/wikipedia (20231101.vi)` + `VTSNLP/vietnamese_curated_dataset`
@@ -78,5 +84,5 @@ len(tok)  # == tok.vocab_size
 - Đổi base tokenizer (PhoBERT ↔ custom BPE, hoặc train lại BPE) → vocab lệch
   hoàn toàn → phải train model từ đầu.
 - Nếu thêm token domain-specific kiểu cũ (không phải price token), dùng
-  `scripts/add_custom_tokens.py` — **lưu ra thư mục riêng**, không sửa
+  `app/memlm/scripts/add_custom_tokens.py` — **lưu ra thư mục riêng**, không sửa
   tokenizer gốc, để tránh phá checkpoint cũ (xem docstring trong script đó).

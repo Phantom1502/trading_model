@@ -5,8 +5,8 @@ File: `app/memlm/benchmark.py`.
 ## Tổng quan
 
 ```python
-from benchmark import run_all
-from generate import load_model_for_inference
+from app.memlm.benchmark import run_all
+from app.memlm.generate import load_model_for_inference
 
 model, tokenizer, cfg = load_model_for_inference("checkpoints/best.pt")
 results = run_all(model, tokenizer, cfg, verbose=True)
@@ -71,7 +71,7 @@ model output chất lượng — ví dụ mode collapse có thể giữ loss th�
 ## So sánh nhiều checkpoint
 
 ```bash
-python benchmark.py checkpoints/chunk_10.pt checkpoints/chunk_50.pt
+python app/memlm/benchmark.py checkpoints/chunk_10.pt checkpoints/chunk_50.pt
 ```
 
 `compare_checkpoints()` load tuần tự từng checkpoint, chạy `run_all`, in

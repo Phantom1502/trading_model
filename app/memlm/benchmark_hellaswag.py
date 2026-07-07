@@ -8,16 +8,34 @@ Lưu ý:
     (~25% = random baseline). Dùng để theo dõi TREND qua các checkpoint,
     không phải để so sánh tuyệt đối với GPT-2/LLaMA.
 
+Giả định chạy/import từ THƯ MỤC GỐC project (xem ghi chú đầu file
+train.py để biết 3 cách chạy hợp lệ).
+
 Usage:
-    python benchmark_hellaswag.py checkpoints/chunk_10.pt
-    python benchmark_hellaswag.py ckpt_10.pt ckpt_50.pt --n-samples 200
+    python app/memlm/benchmark_hellaswag.py checkpoints/chunk_10.pt
+    python app/memlm/benchmark_hellaswag.py ckpt_10.pt ckpt_50.pt --n-samples 200
 """
+
+import os
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError(
+            "Không tìm thấy thư mục gốc project (thư mục chứa 'app/')."
+        )
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
 
-from .model import causal_mask
+from app.memlm.model import causal_mask
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -130,7 +148,7 @@ def hellaswag_score_for_run_all(model, tokenizer, cfg, n_samples=200) -> float:
 # ══════════════════════════════════════════════════════════════════════════
 
 def compare_hellaswag(checkpoint_paths, n_samples=200, verbose=False) -> None:
-    from generate import load_model_for_inference
+    from app.memlm.generate import load_model_for_inference
 
     rows = []
     for path in checkpoint_paths:
@@ -163,7 +181,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if len(args.checkpoints) == 1:
-        from generate import load_model_for_inference
+        from app.memlm.generate import load_model_for_inference
         model, tokenizer, cfg = load_model_for_inference(args.checkpoints[0])
         run_hellaswag(model, tokenizer, cfg, n_samples=args.n_samples, split=args.split, verbose=True)
     else:

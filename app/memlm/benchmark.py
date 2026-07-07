@@ -9,13 +9,31 @@ benchmark.py — Đánh giá pretrained model toàn diện
           + language * 0.20
           + ood      * 0.10
 
+Giả định chạy/import từ THƯ MỤC GỐC project (xem ghi chú đầu file
+train.py để biết 3 cách chạy hợp lệ).
+
 Cách dùng:
-    from benchmark import run_all
-    from generate import load_model_for_inference
+    from app.memlm.benchmark import run_all
+    from app.memlm.generate import load_model_for_inference
 
     model, tokenizer, cfg = load_model_for_inference("checkpoints/best.pt")
     results = run_all(model, tokenizer, cfg, verbose=True)
 """
+
+import os
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError(
+            "Không tìm thấy thư mục gốc project (thư mục chứa 'app/')."
+        )
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import math
 import torch
@@ -23,7 +41,7 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import List
 
-from .model import causal_mask
+from app.memlm.model import causal_mask
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -355,7 +373,7 @@ def run_all(model, tokenizer, cfg, verbose=True, step=None, n_language_samples=5
 # ══════════════════════════════════════════════════════════════════════════
 
 def compare_checkpoints(checkpoint_paths: list[str], verbose: bool = False) -> None:
-    from generate import load_model_for_inference
+    from app.memlm.generate import load_model_for_inference
 
     rows = []
     for path in checkpoint_paths:
@@ -379,13 +397,12 @@ def compare_checkpoints(checkpoint_paths: list[str], verbose: bool = False) -> N
 
 
 if __name__ == "__main__":
-    import sys
     paths = sys.argv[1:]
     if not paths:
-        print("Usage: python benchmark.py <checkpoint> [checkpoint2 ...]")
+        print("Usage: python app/memlm/benchmark.py <checkpoint> [checkpoint2 ...]")
         sys.exit(1)
     if len(paths) == 1:
-        from generate import load_model_for_inference
+        from app.memlm.generate import load_model_for_inference
         model, tokenizer, cfg = load_model_for_inference(paths[0])
         run_all(model, tokenizer, cfg, verbose=True)
     else:

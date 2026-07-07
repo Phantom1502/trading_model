@@ -49,7 +49,7 @@ cfg.data.parquet_text_col = "text"   # đổi nếu cột tên khác
 Hoặc nếu cần lọc theo metadata (`filter_fn` không serializable qua config):
 
 ```python
-from dataset import ChunkedParquetLoader
+from app.memlm.dataset import ChunkedParquetLoader
 loader = ChunkedParquetLoader(
     cfg, tokenizer, "data/my_new_source.parquet",
     filter_fn=lambda s: s.get("genre") == "Lịch sử",

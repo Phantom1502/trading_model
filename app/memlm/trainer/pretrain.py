@@ -1,6 +1,8 @@
 """
 trainer/pretrain.py — Pretraining
 ===================================
+Lưu ý: submodule nội bộ của `app.memlm.trainer`, không chạy trực tiếp —
+xem `app/memlm/train.py` cho entry point + bootstrap sys.path.
 """
 
 import torch
@@ -48,19 +50,19 @@ def run_pretrain(cfg, model, tokenizer, data_loader_gen=None, start_chunk: int =
     # Tạo data loader nếu chưa có
     if data_loader_gen is None:
         if cfg.data.source == "mix":
-            from dataset import ChunkedMixLoader
+            from app.memlm.dataset import ChunkedMixLoader
             data_loader_gen = ChunkedMixLoader(cfg, tokenizer, start_chunk=start_chunk)
         elif cfg.data.source == "wikipedia":
-            from dataset import ChunkedWikiLoader
+            from app.memlm.dataset import ChunkedWikiLoader
             data_loader_gen = ChunkedWikiLoader(cfg, tokenizer, start_chunk=start_chunk)
         elif cfg.data.source == "vtsnlp":
-            from dataset import ChunkedVTSNLPLoader
+            from app.memlm.dataset import ChunkedVTSNLPLoader
             data_loader_gen = ChunkedVTSNLPLoader(
                 cfg, tokenizer, start_chunk=start_chunk,
                 domains=cfg.data.vtsnlp_domains,
             )
         elif cfg.data.source == "parquet":
-            from dataset import ChunkedParquetLoader
+            from app.memlm.dataset import ChunkedParquetLoader
             data_loader_gen = ChunkedParquetLoader(
                 cfg, tokenizer,
                 parquet_path=cfg.data.parquet_path,

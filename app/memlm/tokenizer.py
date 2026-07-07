@@ -249,10 +249,8 @@ class VietnameseTokenizer:
 
 def load_tokenizer(cfg) -> VietnameseTokenizer:
     """Entry point để load tokenizer từ TokenizerConfig."""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    tok_path = os.path.join(base_dir, "custom_tokenizer")
     return VietnameseTokenizer(
-        pretrained_name  = tok_path,
+        pretrained_name  = cfg.tokenizer.pretrained_name,
         use_fast         = cfg.tokenizer.use_fast,
         n_price_bins     = cfg.tokenizer.n_price_bins,
         strict_chart_mode= cfg.tokenizer.strict_chart_mode,
@@ -262,7 +260,12 @@ def load_tokenizer(cfg) -> VietnameseTokenizer:
 if __name__ == "__main__":
     import sys
 
-    tok_path = sys.argv[1] if len(sys.argv) > 1 else "custom_tokenizer"
+    # Mặc định: thư mục "custom_tokenizer" NẰM CẠNH file tokenizer.py này
+    # (app/memlm/custom_tokenizer), tính theo vị trí file — KHÔNG phụ thuộc
+    # cwd lúc chạy script. Trước đây default là chuỗi tương đối
+    # "custom_tokenizer" (phụ thuộc cwd = app/memlm/) — sai nếu chạy từ gốc.
+    _default_tok_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_tokenizer")
+    tok_path = sys.argv[1] if len(sys.argv) > 1 else _default_tok_path
     print(f"Testing tokenizer: {tok_path}\n")
 
     tok = VietnameseTokenizer(pretrained_name=tok_path)
