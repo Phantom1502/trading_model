@@ -53,7 +53,7 @@ from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from app.llama.config import Config
 from app.llama.tokenizer import load_llama_tokenizer
 from app.llama.model import build_model, num_params
-from app.llama.dataset import build_train_eval_datasets
+from app.llama.dataset_simple import build_train_eval_datasets
 from app.llama.benchmark import run_all as run_llama_benchmark
 
 
