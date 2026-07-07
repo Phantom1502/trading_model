@@ -45,16 +45,14 @@ from typing import List
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
 
-PRICE_PREFIX = "px"
-
-
+# Bỏ hẳn tiền tố "px" và dấu ngoặc nhọn đi, trả về đúng định dạng cũ trong file Parquet
 def _price_token(channel: str, bin_idx) -> str:
-    return f"<{PRICE_PREFIX}_{channel}_{bin_idx}>"
+    return f"{channel}_{bin_idx}"  # Kết quả: "O_512", "H_800",...
 
 
 def build_price_tokens(n_bins: int = 1024) -> List[str]:
     tokens = [_price_token(c, i) for c in "OHLC" for i in range(n_bins)]
-    tokens += ["<chart>", "</chart>"]
+    tokens += ["<chart>", "</chart>"]  # Giữ lại các thẻ bao bọc nếu data có dùng
     return tokens
 
 
@@ -121,35 +119,9 @@ def load_llama_tokenizer(cfg) -> PreTrainedTokenizerFast:
 _OLD_PRICE_RE = re.compile(r"\b([OHLC])_(-?\d+)\b")
 
 
-def convert_legacy_price_tokens(text: str) -> str:
-    """'O_512 H_800 L_300 C_600' -> '<px_O_512> <px_H_800> <px_L_300> <px_C_600>'."""
-    return _OLD_PRICE_RE.sub(lambda m: _price_token(m.group(1), m.group(2)), text)
-
 
 if __name__ == "__main__":
     import sys
 
     base_dir = sys.argv[1] if len(sys.argv) > 1 else "custom_tokenizer"
     out_dir  = sys.argv[2] if len(sys.argv) > 2 else "custom_tokenizer_llama"
-
-    tok = build_llama_tokenizer(base_dir, out_dir)
-    print(f"\nTotal vocab: {len(tok):,}")
-
-    # Sanity check roundtrip
-    sample = convert_legacy_price_tokens(
-        "Phân tích: <chart> O_512 H_800 L_300 C_600 </chart> kết thúc."
-    )
-    print(f"\nConverted text : {sample}")
-
-    ids = tok(sample, add_special_tokens=False)["input_ids"]
-    print(f"Token ids ({len(ids)}): {ids}")
-
-    decoded = tok.decode(ids)
-    print(f"Decoded        : {decoded}")
-
-    # Test: text thường không chứa price token vẫn tokenize bình thường
-    normal = "Trí tuệ nhân tạo đang thay đổi thế giới."
-    ids2   = tok(normal, add_special_tokens=False)["input_ids"]
-    print(f"\nNormal text ({len(ids2)} tok): {tok.decode(ids2)}")
-    assert f"<{PRICE_PREFIX}_" not in tok.decode(ids2), "Text thường không được lẫn price token!"
-    print("✓ Sanity check OK")

@@ -51,7 +51,7 @@ from transformers import (
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 from app.llama.config import Config
-from app.llama.tokenizer import load_llama_tokenizer, convert_legacy_price_tokens
+from app.llama.tokenizer import load_llama_tokenizer
 from app.llama.model import build_model, num_params
 from app.llama.dataset import build_train_eval_datasets
 from app.llama.benchmark import run_all as run_llama_benchmark
@@ -242,8 +242,7 @@ def main(cfg: Config = None):
 
     # ── Dataset (streaming, RAM-safe) ───────────────────────────────────────
     print(f"\n── Dataset streaming: source={cfg.data.source} | block_size={cfg.data.block_size} ──")
-    text_transform = convert_legacy_price_tokens if cfg.data.source in ("parquet", "mix") else None
-    train_dataset, eval_dataset = build_train_eval_datasets(cfg, tokenizer, text_transform=text_transform)
+    train_dataset, eval_dataset = build_train_eval_datasets(cfg, tokenizer, text_transform=None)
 
     if cfg.train.resume_from:
         _maybe_resume_dataset_position(train_dataset, cfg.train.resume_from)
