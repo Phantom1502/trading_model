@@ -78,24 +78,6 @@ def build_llama_tokenizer(
 
     print(f"  Loading base tokenizer: {base_tokenizer_dir}")
     tok = AutoTokenizer.from_pretrained(base_tokenizer_dir)
-
-    if tok.pad_token is None:
-        tok.pad_token = tok.eos_token
-
-    price_tokens = build_price_tokens(n_price_bins)
-    vocab_before = len(tok)
-    num_added    = tok.add_tokens(price_tokens)
-    vocab_after  = len(tok)
-
-    print(f"  Vocab trước: {vocab_before:,} | thêm: {num_added:,} | sau: {vocab_after:,}")
-    assert vocab_after == vocab_before + num_added, (
-        "Số token thêm không khớp — có thể base tokenizer đã chứa sẵn một số "
-        "price token trùng tên (không nên xảy ra với base BPE mới train)."
-    )
-
-    os.makedirs(output_dir, exist_ok=True)
-    tok.save_pretrained(output_dir)
-    print(f"  ✓ Đã lưu tokenizer (BPE + price token thật) → {output_dir}/")
     return tok
 
 
@@ -106,17 +88,6 @@ def load_llama_tokenizer(cfg) -> PreTrainedTokenizerFast:
         output_dir=cfg.tokenizer.output_dir,
         n_price_bins=cfg.tokenizer.n_price_bins,
     )
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Convert text cũ ("O_512 H_800 ...") -> định dạng price token mới
-# ══════════════════════════════════════════════════════════════════════════
-#
-# Dùng khi đọc dữ liệu trading đã sinh sẵn từ ChartCodec/CurriculumGenerator/
-# ActionDataGen (app/utils/chart/*) — KHÔNG cần sửa lại các file đó, chỉ cần
-# convert text ngay TRƯỚC KHI tokenize (xem app/llama/dataset.py: text_transform).
-
-_OLD_PRICE_RE = re.compile(r"\b([OHLC])_(-?\d+)\b")
 
 
 
