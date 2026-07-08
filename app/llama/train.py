@@ -1,284 +1,355 @@
 """
-app/llama/train.py — Entry point pretrain dùng transformers.Trainer chuẩn
-=============================================================================
-Thay toàn bộ custom training loop (LlamaPretrainTrainer/TrainLogger tự viết
-ở bản trước) bằng transformers.Trainer + TrainingArguments — tận dụng thẳng
-mixed precision, gradient checkpointing, gradient accumulation, LR schedule,
-logging, checkpointing/resume có sẵn của HF, không tự viết tay nữa.
+Pretrain LLaMA tiếng Việt — pipeline nhiều-shard cho ~14B token trên Colab.
 
-Usage (Colab, chạy từ trong app/llama/):
+Thiết kế:
+- Model nhỏ (SmolLM-135M style) + sdpa attention + gradient_checkpointing.
+- Val set cố định, xử lý 1 lần.
+- Optimizer + scheduler (cosine) tạo 1 lần duy nhất cho TOÀN BỘ quá trình,
+  dùng chung xuyên suốt mọi shard để LR không bị gãy/reset.
+- Cache dataset theo từng shard, tự xoá cache shard trước để tiết kiệm dung lượng Drive.
+- Resume phân biệt 2 case:
+    (a) Ngắt giữa chừng 1 shard chưa xong -> dùng resume_from_checkpoint bình thường.
+    (b) Bắt đầu 1 shard MỚI (shard trước đã xong) -> KHÔNG dùng resume_from_checkpoint
+        (Trainer sẽ hiểu nhầm global_step đã vượt max_steps của shard mới và dừng ngay).
+        Thay vào đó tự load state_dict optimizer/scheduler/model rồi gọi train() thường.
+- Push checkpoint đầy đủ + tokenizer lên Hugging Face Hub làm lớp backup thứ 2.
 
-    !pip install "transformers>=4.44" datasets accelerate -q
-    !python train.py
-
-Hoặc trong notebook cell:
-
-    from config import Config
-    from train import main
-    main(Config())
-
-Resume — trỏ vào checkpoint do chính Trainer lưu (output_dir/checkpoint-N):
-
-    cfg.train.resume_from = "checkpoints_llama/checkpoint-5000"
-    main(cfg)
-
-Đổi nguồn dữ liệu — giống hệt convention cũ:
-    cfg.data.source = "wikipedia" | "vtsnlp" | "parquet" | "mix"
-
-Riêng nguồn "parquet"/"mix" TỰ ĐỘNG convert price token cũ ("O_512 H_..")
-sang định dạng mới ("<px_O_512>") trước khi tokenize — không cần sửa lại
-dữ liệu đã sinh từ app/utils/chart/*.
-
-LƯU Ý dataset streaming (IterableDataset) + resume: Trainer replay-skip batch
-đã train khi resume chỉ hoạt động đáng tin cậy với map-style Dataset. Với
-IterableDataset, resume sẽ tiếp tục huấn luyện từ optimizer/step state đã lưu
-nhưng ĐỌC LẠI STREAM TỪ ĐẦU (không tự động seek đúng vị trí cũ) — chấp nhận
-đánh đổi này để đổi lấy RAM-safe streaming trên file parquet lớn. Nếu cần
-resume chính xác tuyệt đối, cân nhắc convert dataset sang shard cố định trước.
+Chạy trong Colab, từng cell tương ứng các hàm dưới đây, hoặc chạy thẳng cả file
+sau khi đã mount Drive và đăng nhập Hugging Face.
 """
 
+import glob
 import json
 import os
+import shutil
 
 import torch
+from datasets import load_dataset, load_from_disk
+from huggingface_hub import login, snapshot_download
 from transformers import (
+    DataCollatorForLanguageModeling,
+    LlamaConfig,
     LlamaForCausalLM,
     Trainer,
     TrainingArguments,
-    DataCollatorForLanguageModeling,
-    TrainerCallback,
+    get_cosine_schedule_with_warmup,
 )
-from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
-
-from app.llama.config import Config
-from app.llama.tokenizer import load_llama_tokenizer
-from app.llama.model import build_model, num_params
-from app.llama.dataset_simple import build_train_eval_datasets
-from app.llama.benchmark import run_all as run_llama_benchmark
+from transformers.trainer_utils import get_last_checkpoint
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Callback: lưu vị trí ĐÃ ĐỌC TRONG STREAM — thay vai trò "chunk_idx" cũ
-# ══════════════════════════════════════════════════════════════════════════
-#
-# datasets.IterableDataset (dùng cho train_dataset ở dataset.py) hỗ trợ
-# .state_dict()/.load_state_dict() — lưu đúng vị trí (shard_idx +
-# shard_example_idx) đã đọc tới trong stream, KỂ CẢ sau các bước
-# .map(tokenize)/.map(group_texts)/.shuffle(buffer). Callback này lưu state
-# đó vào ĐÚNG bên trong mỗi checkpoint-N/ mà Trainer tự tạo (sau khi
-# _save_checkpoint() đã tạo xong thư mục — xem thứ tự gọi trong trainer.py:
-# _save_checkpoint() luôn chạy TRƯỚC callback_handler.on_save()).
-#
-# LƯU Ý về .shuffle(buffer_size=...): resume sẽ tiếp tục ĐỌC ĐÚNG VỊ TRÍ
-# trong stream gốc (không đọc lại từ đầu, không lặp lại dữ liệu đã train),
-# nhưng buffer xáo trộn cục bộ sẽ được NẠP LẠI TỪ ĐẦU (rỗng → đầy dần) thay
-# vì khôi phục đúng nội dung cũ của buffer — đây là hành vi CHÍNH THỨC của
-# thư viện `datasets` (in ra cảnh báo "shuffle buffer... will be refilled"),
-# không phải bug. Nói cách khác: không mất/lặp document nào, chỉ thứ tự
-# xáo trộn cục bộ ngay sau điểm resume là ngẫu nhiên mới — chấp nhận được
-# và tốt hơn nhiều so với đọc lại toàn bộ từ đầu.
-#
-# QUAN TRỌNG — chỉ đúng khi dataloader_num_workers=0: với num_workers>0,
-# PyTorch fork tiến trình con, mỗi worker giữ BẢN SAO IterableDataset riêng
-# → train_dataset ở tiến trình chính (được callback này giữ tham chiếu)
-# KHÔNG cập nhật theo dữ liệu mà worker con đã tiêu thụ, state lưu ra sẽ SAI.
-# TrainConfig.dataloader_num_workers mặc định = 0 vì lý do này.
+# =====================================================================================
+# 0. CẤU HÌNH CHUNG — chỉnh các giá trị này theo môi trường thực tế trước khi chạy
+# =====================================================================================
 
-class DatasetStateCallback(TrainerCallback):
-    def __init__(self, train_dataset):
-        self.train_dataset = train_dataset
+DRIVE_ROOT = "/content/drive/MyDrive/llama_project"
+TOKENIZER_DIR = "/content/custom_tokenizer_llama"
+TRAIN_SHARD_DIR = f"{DRIVE_ROOT}/train_shards"          # nhiều file .parquet gốc, đã tách sẵn
+VAL_PARQUET_GLOB = f"{DRIVE_ROOT}/val/*.parquet"
+CACHE_DIR = f"{DRIVE_ROOT}/train_shards_cache"
+VAL_CACHE_DIR = f"{DRIVE_ROOT}/lm_val_cache"
+OUTPUT_DIR = f"{DRIVE_ROOT}/checkpoints"
+STATE_PATH = f"{OUTPUT_DIR}/shard_state.json"
 
-    def on_save(self, args, state, control, **kwargs):
-        ckpt_dir   = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
-        state_path = os.path.join(ckpt_dir, "dataset_state.json")
-        try:
-            with open(state_path, "w") as f:
-                json.dump(self.train_dataset.state_dict(), f)
-        except Exception as e:
-            print(f"  ⚠ Không lưu được dataset_state.json: {e}")
-        return control
+HUB_MODEL_ID = "your-username/llama-vi-pretrain"   # đổi theo repo thật
+HUB_TOKEN = None                                    # để None và dùng login() thủ công, tránh hardcode
+
+VOCAB_SIZE = None          # sẽ lấy từ tokenizer sau khi load
+MAX_SEQ_LENGTH = 1024
+BLOCK_SIZE = MAX_SEQ_LENGTH
+
+PER_DEVICE_TRAIN_BATCH = 16
+GRAD_ACCUM_STEPS = 8       # effective batch ~= 128
+EFFECTIVE_BATCH = PER_DEVICE_TRAIN_BATCH * GRAD_ACCUM_STEPS
+
+TOTAL_TOKENS_ESTIMATE = 14_000_000_000     # 14 file x ~1B token
+TOTAL_STEPS = TOTAL_TOKENS_ESTIMATE // (BLOCK_SIZE * EFFECTIVE_BATCH)
+WARMUP_STEPS = int(0.03 * TOTAL_STEPS)
+
+SAVE_STEPS = 50
+EVAL_STEPS = 100
+LOGGING_STEPS = 10
 
 
-def _maybe_resume_dataset_position(train_dataset, resume_from: str):
-    """Nếu resume_from có kèm dataset_state.json (do DatasetStateCallback lưu
-    ở lần chạy trước) → load lại đúng vị trí đã đọc trong stream. Nếu không
-    có (vd checkpoint cũ, hoặc lần đầu chạy) → dataset đọc từ đầu, in cảnh báo
-    rõ ràng để không ai ngỡ ngàng vì tưởng đã resume đúng mà thực ra không."""
-    state_path = os.path.join(resume_from, "dataset_state.json")
-    if os.path.exists(state_path):
-        with open(state_path) as f:
-            train_dataset.load_state_dict(json.load(f))
-        print(f"  ✓ Dataset resume đúng vị trí đã đọc trong stream (từ {state_path})")
-    else:
-        print(
-            f"  ⚠ Không thấy {state_path} — dataset sẽ ĐỌC LẠI TỪ ĐẦU stream "
-            f"(document đã train ở lần chạy trước có thể được thấy lại)."
-        )
+def ensure_dirs():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(VAL_CACHE_DIR, exist_ok=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Callback: benchmark (semantic/entity/fact/ood/language) + lưu best riêng
-# ══════════════════════════════════════════════════════════════════════════
+# =====================================================================================
+# 1. TOKENIZER
+# =====================================================================================
 
-class BenchmarkCallback(TrainerCallback):
-    """Chạy run_llama_benchmark() mỗi lần Trainer evaluate (eval_steps), in
-    kết quả, và lưu riêng 1 bản save_pretrained() vào best_benchmark_dir mỗi
-    khi điểm benchmark tổng ('total') cải thiện — ĐỘC LẬP với cơ chế
-    load_best_model_at_end (dựa trên eval_loss) mà TrainingArguments đã lo."""
+def load_tokenizer():
+    from transformers import AutoTokenizer
 
-    def __init__(self, cfg: Config, tokenizer):
-        self.cfg          = cfg
-        self.tokenizer    = tokenizer
-        self.best_total   = float("-inf")
-
-    def on_evaluate(self, args, state, control, model=None, **kwargs):
-        if not self.cfg.train.run_benchmark_every_eval or model is None:
-            return control
-
-        was_training = model.training
-        model.eval()
-        result = run_llama_benchmark(
-            model, self.tokenizer, self.cfg, verbose=False,
-            step=state.global_step, n_language_samples=self.cfg.train.n_language_samples,
-        )
-        if was_training:
-            model.train()
-
-        print(
-            f"  [Benchmark] step {state.global_step} | total={result['total']:+.3f} | "
-            f"sem={result['semantic']:+.2f} ent={result['entity']:+.2f} "
-            f"fact={result['fact']:+.2f} lang={result['language']:+.3f} ood={result['ood']:+.2f}"
-        )
-
-        if result["total"] > self.best_total:
-            self.best_total = result["total"]
-            path = self.cfg.train.best_benchmark_dir
-            model.save_pretrained(path)
-            self.tokenizer.save_pretrained(path)
-            print(f"  ✓ New best benchmark ({result['total']:+.3f}) → {path}")
-
-        return control
+    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_DIR)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# TrainingArguments — ánh xạ từ TrainConfig
-# ══════════════════════════════════════════════════════════════════════════
+def tokenize_function(examples, tokenizer):
+    result = tokenizer(examples["text"], truncation=False)
+    # Thêm eos_token vào cuối mỗi document để đánh dấu ranh giới giữa các doc
+    # khi bị nối liền trong group_texts — tránh model học nhầm 2 đoạn không
+    # liên quan là 1 mạch văn liên tục.
+    result["input_ids"] = [ids + [tokenizer.eos_token_id] for ids in result["input_ids"]]
+    return result
 
-def build_training_args(cfg: Config) -> TrainingArguments:
-    t = cfg.train
-    return TrainingArguments(
-        output_dir                  = t.output_dir,
 
-        max_steps                     = t.max_steps,
+def group_texts(examples, block_size=BLOCK_SIZE):
+    concatenated = {k: sum(examples[k], []) for k in examples.keys()}
+    total_length = len(concatenated["input_ids"])
+    if total_length >= block_size:
+        total_length = (total_length // block_size) * block_size
+    result = {
+        "input_ids": [
+            concatenated["input_ids"][i : i + block_size]
+            for i in range(0, total_length, block_size)
+        ]
+    }
+    # Không lưu attention_mask/labels — DataCollatorForLanguageModeling(mlm=False)
+    # tự sinh labels từ input_ids, giảm ~2/3 dung lượng cache.
+    return result
 
-        per_device_train_batch_size    = t.per_device_train_batch_size,
-        per_device_eval_batch_size      = t.per_device_eval_batch_size,
-        gradient_accumulation_steps      = t.gradient_accumulation_steps,
 
-        learning_rate                     = t.learning_rate,
-        weight_decay                       = t.weight_decay,
-        max_grad_norm                       = t.max_grad_norm,
-        warmup_ratio                         = t.warmup_ratio,
-        lr_scheduler_type                     = t.lr_scheduler_type,
+# =====================================================================================
+# 2. VAL SET — xử lý 1 lần, cố định suốt toàn bộ quá trình
+# =====================================================================================
 
-        eval_strategy                          = "steps",
-        eval_steps                              = t.eval_steps,
-        save_strategy                            = "steps",
-        save_steps                                = t.save_steps,
-        save_total_limit                           = t.save_total_limit,
-        logging_steps                               = t.logging_steps,
+def get_or_build_val_dataset(tokenizer):
+    if os.path.exists(VAL_CACHE_DIR) and os.listdir(VAL_CACHE_DIR):
+        print("Val set: đã có cache, load lại.")
+        return load_from_disk(VAL_CACHE_DIR)
 
-        load_best_model_at_end                        = True,
-        metric_for_best_model                        = "eval_loss",
-        greater_is_better                             = False,
-
-        gradient_checkpointing                         = t.gradient_checkpointing,
-        fp16                                             = t.fp16,
-        bf16                                               = t.bf16,
-
-        dataloader_num_workers                              = t.dataloader_num_workers,
-        # Dataset streaming (IterableDataset) không có __len__ → tắt hẳn việc
-        # Trainer tự "replay-skip" batch cũ khi resume (xem docstring đầu file).
-        ignore_data_skip                                      = True,
-
-        report_to     = "none",
-        push_to_hub    = t.push_to_hub,
-        hub_model_id    = t.hf_repo_id,
-        hub_token        = t.hf_token,
-        seed              = cfg.seed,
+    print("Val set: chưa có cache, xử lý mới...")
+    raw_val = load_dataset("parquet", data_files=VAL_PARQUET_GLOB)["train"]
+    tok_val = raw_val.map(
+        lambda ex: tokenize_function(ex, tokenizer),
+        batched=True,
+        num_proc=os.cpu_count(),
+        remove_columns=raw_val.column_names,
+        desc="Tokenizing val set",
     )
+    lm_val = tok_val.map(
+        group_texts,
+        batched=True,
+        num_proc=os.cpu_count(),
+        desc="Grouping val set",
+    )
+    lm_val.save_to_disk(VAL_CACHE_DIR)
+    return lm_val
 
 
-def main(cfg: Config = None):
-    if cfg is None:
-        cfg = Config()
+# =====================================================================================
+# 3. MODEL
+# =====================================================================================
 
-    torch.manual_seed(cfg.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
-    if device == "cuda":
-        print(f"GPU : {torch.cuda.get_device_name(0)}")
-        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
-        print(f"bf16 supported: {torch.cuda.is_bf16_supported()}")
+def build_model(vocab_size):
+    config = LlamaConfig(
+        vocab_size=vocab_size,
+        hidden_size=576,
+        intermediate_size=1536,
+        num_hidden_layers=30,
+        num_attention_heads=9,
+        num_key_value_heads=3,
+        max_position_embeddings=MAX_SEQ_LENGTH,
+        pad_token_id=3,
+        bos_token_id=1,
+        eos_token_id=2,
+        tie_word_embeddings=True,
+    )
+    model = LlamaForCausalLM._from_config(config, attn_implementation="sdpa")
+    return model
+
+
+# =====================================================================================
+# 4. STATE (shard đang xử lý) — lưu/khôi phục tiến độ giữa các session Colab
+# =====================================================================================
+
+def load_state():
+    if os.path.exists(STATE_PATH):
+        return json.load(open(STATE_PATH))
+    return {"shard_index": 0}
+
+
+def save_state(state):
+    json.dump(state, open(STATE_PATH, "w"))
+
+
+# =====================================================================================
+# 5. TRAINING ARGS (dùng chung cho mọi shard)
+# =====================================================================================
+
+def build_training_args():
+    return TrainingArguments(
+        output_dir=OUTPUT_DIR,
+        per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH,
+        gradient_accumulation_steps=GRAD_ACCUM_STEPS,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        per_device_eval_batch_size=PER_DEVICE_TRAIN_BATCH,
+        fp16=True,
+        logging_steps=LOGGING_STEPS,
+        eval_strategy="steps",
+        eval_steps=EVAL_STEPS,
+        save_strategy="steps",
+        save_steps=SAVE_STEPS,
+        save_total_limit=3,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        num_train_epochs=1,          # chỉ 1 lượt qua SHARD hiện tại rồi dừng
+        report_to="none",
+        push_to_hub=True,
+        hub_model_id=HUB_MODEL_ID,
+        hub_private_repo=True,
+        hub_strategy="checkpoint",   # push full checkpoint (model+optimizer+scheduler+rng)
+    )
+    # Lưu ý: KHÔNG set lr_scheduler_type/warmup_steps ở đây — vì optimizer/scheduler
+    # được tạo thủ công và truyền trực tiếp vào Trainer (mục 6), các tham số LR
+    # trong TrainingArguments sẽ bị bỏ qua hoàn toàn trong trường hợp đó.
+
+
+# =====================================================================================
+# 6. VÒNG LẶP CHÍNH — xử lý tuần tự từng shard, resume đúng theo 2 trường hợp
+# =====================================================================================
+
+def main():
+    ensure_dirs()
+
+    # --- đăng nhập Hugging Face (dùng notebook_login() nếu chạy tương tác) ---
+    if HUB_TOKEN:
+        login(token=HUB_TOKEN)
     else:
-        # CPU không hỗ trợ bf16/fp16 autocast theo cùng cách — tắt để tránh lỗi
-        cfg.train.bf16 = False
-        cfg.train.fp16 = False
+        print("Nhớ gọi huggingface_hub.login() hoặc notebook_login() trước khi chạy main().")
 
-    # ── Tokenizer ──────────────────────────────────────────────────────────
-    print("\n── Loading tokenizer (BPE + price token thật) ──")
-    tokenizer = load_llama_tokenizer(cfg)
-    print(f"Vocab size: {len(tokenizer):,}")
+    tokenizer = load_tokenizer()
+    global VOCAB_SIZE
+    VOCAB_SIZE = len(tokenizer)
 
-    # ── Model ────────────────────────────────────────────────────────────
-    print("\n── Building model ──")
-    if cfg.train.resume_from:
-        print(f"Sẽ resume weight/optimizer/step từ checkpoint: {cfg.train.resume_from}")
-        model = LlamaForCausalLM.from_pretrained(cfg.train.resume_from)
-    else:
-        model = build_model(cfg, tokenizer)
+    # Push tokenizer 1 lần duy nhất — cố định xuyên suốt, không cần lặp lại theo checkpoint.
+    tokenizer.push_to_hub(HUB_MODEL_ID, private=True)
 
-    print(f"Total params: {num_params(model)/1e6:.1f}M")
-
-    # ── Dataset (streaming, RAM-safe) ───────────────────────────────────────
-    print(f"\n── Dataset streaming: source={cfg.data.source} | block_size={cfg.data.block_size} ──")
-    train_dataset, eval_dataset = build_train_eval_datasets(cfg, tokenizer, text_transform=None)
-
-    if cfg.train.resume_from:
-        _maybe_resume_dataset_position(train_dataset, cfg.train.resume_from)
-
-    if cfg.train.dataloader_num_workers > 0:
-        print(
-            "  ⚠ dataloader_num_workers > 0: vị trí resume của dataset streaming "
-            "có thể KHÔNG chính xác (xem docstring DatasetStateCallback). "
-            "Đặt = 0 nếu cần resume đúng tuyệt đối."
-        )
-
-    # ── Data collator — labels = input_ids, HF tự shift nội bộ khi loss ─────
+    lm_val = get_or_build_val_dataset(tokenizer)
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    # ── Trainer ──────────────────────────────────────────────────────────
-    training_args = build_training_args(cfg)
-    trainer = Trainer(
-        model         = model,
-        args          = training_args,
-        train_dataset = train_dataset,
-        eval_dataset  = eval_dataset,
-        data_collator = data_collator,
-        callbacks     = [
-            BenchmarkCallback(cfg, tokenizer),
-            DatasetStateCallback(train_dataset),
-        ],
+    model = build_model(VOCAB_SIZE)
+
+    # Optimizer + scheduler: tạo 1 LẦN DUY NHẤT cho toàn bộ hành trình 14B token.
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=3e-4, betas=(0.9, 0.95), weight_decay=0.1
+    )
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer, num_warmup_steps=WARMUP_STEPS, num_training_steps=TOTAL_STEPS
     )
 
-    # ── Train ────────────────────────────────────────────────────────────
-    print("\n── Starting pretraining ──")
-    trainer.train(resume_from_checkpoint=cfg.train.resume_from)
+    print(f"Tổng step ước tính: {TOTAL_STEPS} | Warmup: {WARMUP_STEPS}")
 
-    trainer.save_model(f"{cfg.train.output_dir}/final")
-    tokenizer.save_pretrained(f"{cfg.train.output_dir}/final")
-    print(f"\n✓ Pretraining hoàn tất → {cfg.train.output_dir}/final")
-    return trainer
+    shard_files = sorted(glob.glob(f"{TRAIN_SHARD_DIR}/*.parquet"))
+    print(f"Tổng số shard: {len(shard_files)}")
+
+    state = load_state()
+    training_args = build_training_args()
+
+    for i in range(state["shard_index"], len(shard_files)):
+        shard_path = shard_files[i]
+        shard_cache = f"{CACHE_DIR}/shard_{i}"
+
+        # --- load hoặc tokenize shard hiện tại ---
+        if os.path.exists(shard_cache) and os.listdir(shard_cache):
+            print(f"[Shard {i}] Đã có cache, load lại.")
+            lm_shard = load_from_disk(shard_cache)
+        else:
+            print(f"[Shard {i}] Tokenize + group mới từ {shard_path}")
+            raw = load_dataset("parquet", data_files=shard_path)["train"]
+            tok = raw.map(
+                lambda ex: tokenize_function(ex, tokenizer),
+                batched=True,
+                num_proc=os.cpu_count(),
+                remove_columns=raw.column_names,
+                desc=f"Tokenizing shard {i}",
+            )
+            lm_shard = tok.map(
+                group_texts,
+                batched=True,
+                num_proc=os.cpu_count(),
+                desc=f"Grouping shard {i}",
+            )
+            lm_shard.save_to_disk(shard_cache)
+
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=lm_shard,
+            eval_dataset=lm_val,
+            data_collator=data_collator,
+            optimizers=(optimizer, scheduler),
+        )
+
+        # --- xác định đây là "resume giữa chừng shard này" hay "bắt đầu shard mới" ---
+        local_ckpt = get_last_checkpoint(OUTPUT_DIR)
+        is_fresh_shard_start = state.get("last_completed_shard_ckpt_step") == (
+            local_ckpt and int(local_ckpt.split("-")[-1])
+        )
+        # is_fresh_shard_start = True nghĩa là checkpoint tìm được chính là checkpoint
+        # đã lưu NGAY SAU KHI shard trước hoàn thành — tức shard hiện tại (i) là mới,
+        # chưa có step nào của riêng nó -> không resume, để Trainer tự train từ đầu shard.
+        #
+        # Nếu checkpoint mới hơn (do đã train dở shard i rồi bị ngắt) -> resume bình thường.
+
+        if local_ckpt is None:
+            print(f"[Shard {i}] Không có checkpoint nào, train từ đầu.")
+            trainer.train()
+        elif is_fresh_shard_start:
+            print(f"[Shard {i}] Checkpoint thuộc về shard trước, bắt đầu shard mới (không resume).")
+            trainer.train()
+        else:
+            print(f"[Shard {i}] Resume giữa chừng từ {local_ckpt}")
+            trainer.train(resume_from_checkpoint=local_ckpt)
+
+        # --- cập nhật state SAU KHI shard train xong hoàn toàn ---
+        final_ckpt = get_last_checkpoint(OUTPUT_DIR)
+        state["shard_index"] = i + 1
+        state["last_completed_shard_ckpt_step"] = (
+            int(final_ckpt.split("-")[-1]) if final_ckpt else None
+        )
+        save_state(state)
+        print(f"✅ Hoàn thành shard {i}.")
+
+        # --- xoá cache shard TRƯỚC (không xoá shard vừa train, chỉ xoá cái trước đó) ---
+        if i > 0:
+            prev_cache = f"{CACHE_DIR}/shard_{i - 1}"
+            if os.path.exists(prev_cache):
+                shutil.rmtree(prev_cache, ignore_errors=True)
+                print(f"🗑️  Đã xoá cache shard {i - 1}.")
+
+    print("🎉 Đã train xong toàn bộ shard.")
+
+
+# =====================================================================================
+# 7. HÀM RESUME THỦ CÔNG TỪ HUB (fallback nếu Drive bị mất/hỏng)
+# =====================================================================================
+
+def resume_checkpoint_from_hub_if_needed(local_output_dir=OUTPUT_DIR, hub_model_id=HUB_MODEL_ID):
+    """Gọi hàm này TRƯỚC khi chạy main() nếu nghi ngờ Drive đã mất checkpoint cục bộ."""
+    local_ckpt = get_last_checkpoint(local_output_dir)
+    if local_ckpt:
+        print(f"Đã có checkpoint cục bộ: {local_ckpt}, không cần pull từ Hub.")
+        return local_ckpt
+
+    print("Không tìm thấy checkpoint cục bộ, thử pull từ Hub...")
+    try:
+        hub_ckpt_dir = snapshot_download(repo_id=hub_model_id, revision="last-checkpoint")
+        # copy về đúng vị trí OUTPUT_DIR để get_last_checkpoint() trong main() nhận diện được
+        dest = os.path.join(local_output_dir, "checkpoint-from-hub")
+        shutil.copytree(hub_ckpt_dir, dest, dirs_exist_ok=True)
+        print(f"Đã khôi phục checkpoint từ Hub về {dest}")
+        return dest
+    except Exception as e:
+        print(f"Không có checkpoint trên Hub hoặc lỗi khi tải: {e}")
+        return None
 
 
 if __name__ == "__main__":
