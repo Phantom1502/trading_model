@@ -35,14 +35,18 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 from transformers.trainer_utils import get_last_checkpoint
-
+from app.llama.config import (
+    Config,
+    TokenizerConfig,
+    ModelConfig,
+)
 
 # =====================================================================================
 # 0. CẤU HÌNH CHUNG — chỉnh các giá trị này theo môi trường thực tế trước khi chạy
 # =====================================================================================
 
 DRIVE_ROOT = "/content/drive/MyDrive/llama_project"
-TOKENIZER_DIR = "/content/custom_tokenizer_llama"
+TOKENIZER_DIR = "custom_tokenizer_llama"
 TRAIN_SHARD_DIR = f"{DRIVE_ROOT}/train_shards"          # nhiều file .parquet gốc, đã tách sẵn
 VAL_PARQUET_GLOB = f"{DRIVE_ROOT}/val/*.parquet"
 CACHE_DIR = f"{DRIVE_ROOT}/train_shards_cache"
@@ -80,10 +84,13 @@ def ensure_dirs():
 # 1. TOKENIZER
 # =====================================================================================
 
-def load_tokenizer():
+def load_tokenizer(tokenizer_config: TokenizerConfig):
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_DIR)
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_config.pretrained_name,
+        use_fast=tokenizer_config.use_fast,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
@@ -118,10 +125,10 @@ def group_texts(examples, block_size=BLOCK_SIZE):
 # 2. VAL SET — xử lý 1 lần, cố định suốt toàn bộ quá trình
 # =====================================================================================
 
-def get_or_build_val_dataset(tokenizer):
-    if os.path.exists(VAL_CACHE_DIR) and os.listdir(VAL_CACHE_DIR):
+def get_or_build_val_dataset(tokenizer, val_cache_path=None):
+    if val_cache_path and os.path.exists(val_cache_path) and os.listdir(val_cache_path):
         print("Val set: đã có cache, load lại.")
-        return load_from_disk(VAL_CACHE_DIR)
+        return load_from_disk(val_cache_path)
 
     print("Val set: chưa có cache, xử lý mới...")
     raw_val = load_dataset("parquet", data_files=VAL_PARQUET_GLOB)["train"]
@@ -138,7 +145,8 @@ def get_or_build_val_dataset(tokenizer):
         num_proc=os.cpu_count(),
         desc="Grouping val set",
     )
-    lm_val.save_to_disk(VAL_CACHE_DIR)
+    if val_cache_path:
+        lm_val.save_to_disk(val_cache_path)
     return lm_val
 
 
@@ -146,19 +154,19 @@ def get_or_build_val_dataset(tokenizer):
 # 3. MODEL
 # =====================================================================================
 
-def build_model(vocab_size):
+def build_model(model_config: ModelConfig):
     config = LlamaConfig(
-        vocab_size=vocab_size,
-        hidden_size=576,
-        intermediate_size=1536,
-        num_hidden_layers=30,
-        num_attention_heads=9,
-        num_key_value_heads=3,
-        max_position_embeddings=MAX_SEQ_LENGTH,
+        vocab_size=model_config.vocab_size,
+        hidden_size=model_config.hidden_size,
+        intermediate_size=model_config.intermediate_size,
+        num_hidden_layers=model_config.num_hidden_layers,
+        num_attention_heads=model_config.num_attention_heads,
+        num_key_value_heads=model_config.num_key_value_heads,
+        max_position_embeddings=model_config.max_position_embeddings,
         pad_token_id=3,
         bos_token_id=1,
         eos_token_id=2,
-        tie_word_embeddings=True,
+        tie_word_embeddings=model_config.tie_word_embeddings,
     )
     model = LlamaForCausalLM._from_config(config, attn_implementation="sdpa")
     return model
@@ -216,26 +224,39 @@ def build_training_args():
 # 6. VÒNG LẶP CHÍNH — xử lý tuần tự từng shard, resume đúng theo 2 trường hợp
 # =====================================================================================
 
-def main():
+def main(cfg: Config = Config()):
     ensure_dirs()
+    
+    torch.manual_seed(cfg.seed)
 
-    # --- đăng nhập Hugging Face (dùng notebook_login() nếu chạy tương tác) ---
-    if HUB_TOKEN:
-        login(token=HUB_TOKEN)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    cfg.train.device = device
+    print(f"Device: {device}")
+    if device == "cuda":
+        print(f"GPU : {torch.cuda.get_device_name(0)}")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
+
+
+    # ── Hugging Face Hub login ───────────────────────────────────────────────
+    if cfg.hub.hf_token:
+        login(token=cfg.hub.hf_token)
     else:
         print("Nhớ gọi huggingface_hub.login() hoặc notebook_login() trước khi chạy main().")
 
-    tokenizer = load_tokenizer()
-    global VOCAB_SIZE
-    VOCAB_SIZE = len(tokenizer)
-
+    # ── Tokenizer ──────────────────────────────────────────────────────────
+    tokenizer = load_tokenizer(cfg.tokenizer)
+    cfg.model.vocab_size = len(tokenizer)
+    print(f"Tokenizer vocab size: {cfg.model.vocab_size}")
+    
     # Push tokenizer 1 lần duy nhất — cố định xuyên suốt, không cần lặp lại theo checkpoint.
-    tokenizer.push_to_hub(HUB_MODEL_ID, private=True)
+    tokenizer.push_to_hub(cfg.hub.repo_id, private=True)
 
-    lm_val = get_or_build_val_dataset(tokenizer)
+    # ── Datasets ───────────────────────────────────────────────────────────
+    # Load hoặc build val set 1 lần duy nhất, cố định xuyên suốt toàn bộ quá trình.
+    lm_val = get_or_build_val_dataset(tokenizer,cfg.data.val_cache_path)
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    model = build_model(VOCAB_SIZE)
+    model = build_model(cfg.model)
 
     # Optimizer + scheduler: tạo 1 LẦN DUY NHẤT cho toàn bộ hành trình 14B token.
     optimizer = torch.optim.AdamW(
