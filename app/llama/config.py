@@ -107,7 +107,15 @@ class TrainConfig:
     dataloader_num_workers: int = 0
 
     logging_steps: int = 10
-    eval_steps: int = 100
+    # QUAN TRỌNG: khi load_best_model_at_end=True (hardcode trong
+    # trainer_utils.build_training_args), TrainingArguments BẮT BUỘC
+    # save_steps là bội số của eval_steps, nếu không raise ValueError ngay
+    # khi khởi tạo. Bản nháp gốc để save_steps=50/eval_steps=100 (không phải
+    # bội số) — bug có sẵn từ nháp, chỉ chưa lộ vì bản transformers cũ hơn
+    # validate lỏng hơn. Giữ cả 2 = 50 để chắc chắn tương thích; xem thêm
+    # validate_config() ở config.py — sẽ báo lỗi sớm nếu sau này đổi 2 số
+    # này mà quên giữ đúng quan hệ bội số.
+    eval_steps: int = 50
     save_steps: int = 50              # ~40 phút/lần ở tốc độ hiện tại trên T4
     save_total_limit: int = 3
 
@@ -198,6 +206,18 @@ def validate_config(cfg: Config) -> None:
             f"model.max_position_embeddings ({cfg.model.max_position_embeddings}) "
             f"— 2 giá trị này phải khớp nhau, nếu không model sẽ không tận dụng "
             f"hết context hoặc lỗi khi seq dài hơn max_position_embeddings."
+        )
+
+    # ── save_steps phải là bội số của eval_steps (ràng buộc cứng của
+    # TrainingArguments khi load_best_model_at_end=True — luôn True trong
+    # trainer_utils.build_training_args). Bug thật đã gặp: nháp gốc để
+    # save_steps=50/eval_steps=100, không phải bội số -> crash ngay khi tạo
+    # TrainingArguments với ValueError khó đoán nếu không biết trước ràng buộc này.
+    if cfg.train.eval_steps <= 0 or cfg.train.save_steps % cfg.train.eval_steps != 0:
+        errors.append(
+            f"train.save_steps ({cfg.train.save_steps}) phải là BỘI SỐ của "
+            f"train.eval_steps ({cfg.train.eval_steps}) — bắt buộc vì "
+            f"load_best_model_at_end=True. Ví dụ hợp lệ: eval_steps=50, save_steps=50/100/150..."
         )
 
     # ── Hub: push_to_hub=True nhưng thiếu repo_id -> TrainingArguments sẽ lỗi
