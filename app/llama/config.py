@@ -165,3 +165,74 @@ def get_default_config() -> Config:
     cfg = Config()
     cfg.resolve_paths()
     return cfg
+
+
+def validate_config(cfg: Config) -> None:
+    """
+    Kiểm tra sớm các lỗi cấu hình PHỔ BIẾN nhất trước khi tốn thời gian
+    build model/tokenizer/dataset — raise ValueError với thông báo cụ thể
+    thay vì để lỗi xuất hiện mù mờ giữa chừng training (hoặc tệ hơn: không
+    lỗi gì cả mà chạy sai âm thầm, như trường hợp total_tokens_estimate lệch
+    thực tế khiến cosine LR decay sai tốc độ).
+
+    Gọi hàm này ngay đầu train.py::main(), TRƯỚC hub_login()/load_tokenizer().
+    """
+    import glob
+    import os
+
+    errors = []
+
+    # ── Data paths ───────────────────────────────────────────────────────
+    if not cfg.data.train_shard_dir or not os.path.isdir(cfg.data.train_shard_dir):
+        errors.append(f"data.train_shard_dir không tồn tại: {cfg.data.train_shard_dir!r}")
+    elif not glob.glob(f"{cfg.data.train_shard_dir}/*.parquet"):
+        errors.append(f"Không tìm thấy file .parquet nào trong data.train_shard_dir: {cfg.data.train_shard_dir!r}")
+
+    if not cfg.data.val_parquet_glob or not glob.glob(cfg.data.val_parquet_glob):
+        errors.append(f"Không tìm thấy file nào khớp data.val_parquet_glob: {cfg.data.val_parquet_glob!r}")
+
+    # ── block_size phải khớp kiến trúc model, nếu không context bị cắt sai ─
+    if cfg.data.block_size != cfg.model.max_position_embeddings:
+        errors.append(
+            f"data.block_size ({cfg.data.block_size}) != "
+            f"model.max_position_embeddings ({cfg.model.max_position_embeddings}) "
+            f"— 2 giá trị này phải khớp nhau, nếu không model sẽ không tận dụng "
+            f"hết context hoặc lỗi khi seq dài hơn max_position_embeddings."
+        )
+
+    # ── Hub: push_to_hub=True nhưng thiếu repo_id -> TrainingArguments sẽ lỗi
+    # ngay khi Trainer khởi tạo, thà báo sớm ở đây còn hơn để crash lúc đó.
+    if cfg.hub.push_to_hub and not cfg.hub.repo_id:
+        errors.append(
+            "hub.push_to_hub=True nhưng hub.repo_id trống — set cfg.hub.repo_id "
+            "thành 'username/repo-name', hoặc set cfg.hub.push_to_hub=False nếu "
+            "chưa muốn dùng Hub."
+        )
+
+    if errors:
+        msg = "Config chưa sẵn sàng, cần sửa trước khi chạy:\n  - " + "\n  - ".join(errors)
+        raise ValueError(msg)
+
+    print("✓ Config hợp lệ — đã kiểm tra data path, block_size, hub.repo_id.")
+
+
+def print_config_summary(cfg: Config) -> None:
+    """In ra các giá trị THỰC TẾ sẽ được dùng (sau khi resolve_paths) — để
+    nhìn 1 lần biết chắc mình đang trỏ đúng folder/repo nào, không cần nhớ
+    field nào derive từ field nào."""
+    print("── Config summary ──────────────────────────────────────────")
+    print(f"  drive_root         : {cfg.data.drive_root}")
+    print(f"  train_shard_dir    : {cfg.data.train_shard_dir}")
+    print(f"  val_parquet_glob   : {cfg.data.val_parquet_glob}")
+    print(f"  cache_dir          : {cfg.data.cache_dir}")
+    print(f"  val_cache_dir      : {cfg.data.val_cache_dir}")
+    print(f"  block_size         : {cfg.data.block_size}")
+    print(f"  output_dir         : {cfg.train.output_dir}")
+    print(f"  state_path         : {cfg.train.state_path}")
+    print(f"  per_device_batch   : {cfg.train.per_device_train_batch}  "
+          f"x grad_accum {cfg.train.grad_accum_steps} = "
+          f"effective batch {cfg.train.per_device_train_batch * cfg.train.grad_accum_steps}")
+    print(f"  total_tokens_est.  : {cfg.train.total_tokens_estimate:,}")
+    print(f"  hub.repo_id        : {cfg.hub.repo_id}")
+    print(f"  hub.push_to_hub    : {cfg.hub.push_to_hub}")
+    print("────────────────────────────────────────────────────────────")

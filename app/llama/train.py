@@ -25,7 +25,7 @@ import torch
 from transformers import Trainer
 from transformers.trainer_utils import get_last_checkpoint
 
-from app.llama.config import Config, get_default_config
+from app.llama.config import Config, get_default_config, validate_config, print_config_summary
 from app.llama.tokenizer import (
     load_tokenizer,
     sync_vocab_size,
@@ -55,6 +55,9 @@ from app.llama.trainer_utils import (
 def main(cfg: Config = None):
     if cfg is None:
         cfg = get_default_config()
+
+    print_config_summary(cfg)
+    validate_config(cfg)
 
     ensure_dirs(cfg)
     torch.manual_seed(cfg.seed)
