@@ -33,8 +33,16 @@ from app.llama.config import Config
 def tokenize_function(examples, tokenizer):
     """Tokenize, KHÔNG truncate (group_texts sẽ cắt sau khi nối). Thêm eos_token
     vào cuối mỗi document để đánh dấu ranh giới giữa các doc khi bị nối liền —
-    tránh model học nhầm 2 đoạn không liên quan là 1 mạch văn liên tục."""
-    result = tokenizer(examples["text"], truncation=False)
+    tránh model học nhầm 2 đoạn không liên quan là 1 mạch văn liên tục.
+
+    return_attention_mask=False: block sau khi pack luôn ĐỦ block_size (không
+    padding), nên không cần attention_mask. Quan trọng hơn: nếu để tokenizer
+    tự trả attention_mask, cột này có độ dài LỆCH với input_ids (vì chỉ
+    input_ids được +1 eos_token, attention_mask không), gây ArrowInvalid
+    "expected length X but got length Y" khi group_texts đổi số dòng mà
+    không dọn cột thừa — xem thêm remove_columns ở _tokenize_and_group().
+    """
+    result = tokenizer(examples["text"], truncation=False, return_attention_mask=False)
     result["input_ids"] = [ids + [tokenizer.eos_token_id] for ids in result["input_ids"]]
     return result
 
@@ -72,6 +80,13 @@ def _tokenize_and_group(raw: Dataset, tokenizer, block_size: int, num_proc: int,
         lambda ex: group_texts(ex, block_size),
         batched=True,
         num_proc=num_proc,
+        # QUAN TRỌNG: group_texts ĐỔI SỐ DÒNG (nối rồi cắt lại theo block_size),
+        # và chỉ trả về "input_ids". Nếu không remove_columns=tok.column_names,
+        # datasets giữ lại cột cũ (vd attention_mask) với SỐ DÒNG CŨ, lệch với
+        # "input_ids" mới -> ArrowInvalid "expected length X but got length Y".
+        # Đây chính là bug đã gặp — giữ remove_columns này dù đã bỏ
+        # attention_mask ở bước tokenize, để phòng ai đó thêm cột khác sau này.
+        remove_columns=tok.column_names,
         desc=f"Grouping {desc_prefix}",
     )
 
