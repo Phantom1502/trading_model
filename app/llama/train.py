@@ -51,7 +51,19 @@ from app.llama.trainer_utils import (
     build_data_collator,
 )
 
+from transformers import TrainerCallback
 
+class ShowLRCallback(TrainerCallback):
+    def on_step_end(self, args, state, control, **kwargs):
+        # Lấy thông tin từ progress bar hiện tại (nếu có)
+        if state.is_local_process_zero and hasattr(state, 'progress_bar') and state.progress_bar is not None:
+            # Lấy learning rate hiện tại từ optimizer (nếu đã được khởi tạo)
+            if kwargs.get('optimizer') is not None:
+                # Lấy lr của nhóm tham số đầu tiên
+                current_lr = kwargs['optimizer'].param_groups[0]['lr']
+                # Cập nhật thông tin hiển thị ở cuối thanh progress bar
+                state.progress_bar.set_postfix(lr=f"{current_lr:.2e}")
+                
 def main(cfg: Config = None):
     if cfg is None:
         cfg = get_default_config()
@@ -114,6 +126,7 @@ def main(cfg: Config = None):
             eval_dataset=lm_val,
             data_collator=data_collator,
             optimizers=(optimizer, scheduler),
+            callbacks=[ShowLRCallback()]
         )
 
         # --- xác định đây là "resume giữa chừng shard này" hay "bắt đầu shard mới" ---
