@@ -81,7 +81,7 @@ class TrainConfig:
 
     per_device_train_batch: int = 16
     per_device_eval_batch: int = 16
-    grad_accum_steps: int = 8           # effective batch = 16 * 8 = 128
+    grad_accum_steps: int = 64           # effective batch = 16 * 64 = 1024
 
     lr: float = 3e-4
     weight_decay: float = 0.1
