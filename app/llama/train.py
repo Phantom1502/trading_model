@@ -147,29 +147,26 @@ def main(cfg: Config = None):
 
     print("🎉 Đã train xong toàn bộ shard.")
 
+def _tpu_main_wrapper(index, cfg):
+    """torch_xla.launch tự truyền process index (0-7) làm tham số đầu tiên
+    khi gọi hàm — main() chỉ nhận cfg nên cần wrapper này để bỏ qua index."""
+    main(cfg)
+
 
 def run(cfg: Config = None):
     """
     Entry point NÊN DÙNG thay vì gọi main() trực tiếp — đây là chỗ DUY NHẤT
     biết cách "launch" khác nhau giữa GPU/CPU (gọi main() bình thường) và
-    TPU (phải fork cfg.train.num_tpu_cores process qua accelerate, mỗi
-    process chạy 1 core trong 8 core của TPU v5e-8 trên Kaggle — main()
+    TPU (phải fork cfg.train.num_tpu_cores process qua torch_xla.launch,
+    mỗi process chạy 1 core trong 8 core của TPU v5e-8 trên Kaggle — main()
     KHÔNG tự động chạy song song nếu gọi trực tiếp trên TPU).
-
-    Đổi hardware GPU <-> TPU CHỈ CẦN đổi cfg (get_default_config() vs
-    get_tpu_config()) — không cần sửa gì ở đây hay bất kỳ module nào khác.
-
-    LƯU Ý: trên TPU, main() sẽ được gọi TÁM LẦN song song (1 lần/core) —
-    mọi side-effect ghi file (state.py, hub_utils.py) đã tự guard chỉ chạy
-    ở process chính (accelerate.PartialState().is_main_process), không cần
-    lo race condition khi dùng run() thay vì gọi main() tay.
     """
     if cfg is None:
         cfg = get_default_config()
 
     if cfg.train.hardware == "tpu":
         import torch_xla
-        torch_xla.launch(main, args=(cfg,))   # thay cho notebook_launcher
+        torch_xla.launch(_tpu_main_wrapper, args=(cfg,))
     else:
         main(cfg)
 
