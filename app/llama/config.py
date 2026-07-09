@@ -206,8 +206,12 @@ def get_tpu_config() -> Config:
     cfg.train.hardware = "tpu"
     cfg.train.fp16 = False
     cfg.train.bf16 = True
-    cfg.model.attn_implementation = "eager"   # sdpa không đảm bảo lower tốt sang XLA
-    cfg.train.dataloader_num_workers = 0      # an toàn cho mọi hardware, giữ nguyên
+    cfg.model.attn_implementation = "eager"
+    cfg.train.dataloader_num_workers = 0
+    cfg.train.gradient_checkpointing_use_reentrant = True   # THÊM DÒNG NÀY —
+        # non-reentrant (False) gọi torch.<device_type> để lấy device module,
+        # nhưng không tồn tại torch.xla -> AttributeError trên TPU/XLA.
+        # GPU T4 vẫn giữ False như comment gốc (readme.md mục 2), chỉ TPU cần True.
     return cfg
 
 
