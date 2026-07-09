@@ -208,10 +208,10 @@ def get_tpu_config() -> Config:
     cfg.train.bf16 = True
     cfg.model.attn_implementation = "eager"
     cfg.train.dataloader_num_workers = 0
-    cfg.train.gradient_checkpointing_use_reentrant = True   # THÊM DÒNG NÀY —
-        # non-reentrant (False) gọi torch.<device_type> để lấy device module,
-        # nhưng không tồn tại torch.xla -> AttributeError trên TPU/XLA.
-        # GPU T4 vẫn giữ False như comment gốc (readme.md mục 2), chỉ TPU cần True.
+    cfg.train.gradient_checkpointing = False   # tắt trên TPU — model nhỏ, TPU dư
+            # VRAM, và torch.utils.checkpoint (cả 2 kiểu reentrant/non-reentrant)
+            # không tương thích với torch_xla (gọi getattr(torch, "xla") để lưu
+            # RNG state, nhưng không tồn tại torch.xla theo cách đó).
     return cfg
 
 
