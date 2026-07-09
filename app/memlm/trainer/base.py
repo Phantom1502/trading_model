@@ -23,6 +23,7 @@ Xem `docs/conventions/running-from-root.md`.
 """
 
 import math
+from numpy.ma import ids
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -117,6 +118,8 @@ class BaseTrainer:
         ids    = batch["input_ids"].to(self.device)
         labels = batch["labels"].to(self.device)
         T      = ids.shape[1]
+        B      = ids.shape[0]
+        
         #mask   = causal_mask(T, self.device)
         noise_ratio = getattr(self.cfg.train, "span_noise_ratio", 0.0)  # mặc định 0 -> không đổi hành vi cũ nếu chưa set cfg
         span = make_span_noise_mask(T, self.device, noise_ratio=noise_ratio, batch_size=B)
