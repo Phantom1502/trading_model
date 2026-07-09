@@ -86,6 +86,8 @@ class TrainConfig:
     max_grad_norm     : float = 1.0
     epochs_per_chunk  : int   = 1
     total_chunks      : int   = -1    # -1 = train hết toàn bộ dataset
+    
+    span_noise_ratio : float = 0.05  # tỷ lệ nhiễu span trong attention mask
 
     # Cosine annealing with warm restarts (SGDR)
     lr_decay_cycle_steps : int   = 10_000

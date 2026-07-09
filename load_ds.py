@@ -3,10 +3,10 @@ import pandas as pd
 from app.ict.candle import Candle
 from app.ict.parser import CandleParser
 # Read parquet file
-df = pd.read_parquet('data\chart_XAUUSD_dataset_Daily.parquet')
+df = pd.read_parquet(r'E:\LLM Dataset\final\mix_suffle_2.parquet')
 
 # Display head
-print(df.head())
+print(len(df))
 
 print("Dataset shape:", df.shape)
 

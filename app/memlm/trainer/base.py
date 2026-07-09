@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from app.memlm.model import causal_mask
+from app.memlm.model import causal_mask, make_span_noise_mask, get_combined_mask
 from app.memlm.utils import TrainLogger, log_eval, log_bench, save_checkpoint
 from app.memlm.benchmark_ict import run_all_ict_benchmarks
 
@@ -117,7 +117,12 @@ class BaseTrainer:
         ids    = batch["input_ids"].to(self.device)
         labels = batch["labels"].to(self.device)
         T      = ids.shape[1]
-        mask   = causal_mask(T, self.device)
+        #mask   = causal_mask(T, self.device)
+        noise_ratio = getattr(self.cfg.train, "span_noise_ratio", 0.0)  # mặc định 0 -> không đổi hành vi cũ nếu chưa set cfg
+        span = make_span_noise_mask(T, self.device, noise_ratio=noise_ratio, batch_size=B)
+        mask = get_combined_mask(T, span, self.device, strict_check=False)  # tắt strict_check trong hot path
+        if mask.dim() == 3:          # [B, T, T] -> cần thêm chiều head để broadcast đúng
+            mask = mask.unsqueeze(1)  # [B, 1, T, T]
 
         with torch.amp.autocast("cuda", enabled=(self.device.type == "cuda" and self.cfg.train.mixed_precision)):
             logits   = self.model(ids, attn_mask=mask)
