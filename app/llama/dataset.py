@@ -25,7 +25,27 @@ from datasets import Dataset, load_dataset, load_from_disk
 
 from app.llama.config import Config
 
+from contextlib import contextmanager
 
+
+@contextmanager
+def main_process_first_if_distributed(cfg):
+    """
+    Trên TPU (nhiều process song song): chỉ main process tokenize/build cache
+    trước, các process khác ĐỢI rồi đọc cache — tránh N process cùng tokenize
+    trùng nhau (lãng phí RAM/CPU, từng gây OOM + BrokenProcessPool).
+
+    Trên GPU/CPU (chỉ 1 process): không có gì để đồng bộ — chạy thẳng, không
+    import/khởi tạo PartialState (tránh phụ thuộc accelerate không cần thiết
+    và tránh nhầm lẫn log/hành vi khi debug single-process).
+    """
+    if cfg.train.hardware == "tpu":
+        from accelerate import PartialState
+        state = PartialState()
+        with state.main_process_first():
+            yield
+    else:
+        yield
 # ══════════════════════════════════════════════════════════════════════════
 # Tokenize + pack — giữ nguyên logic từ nháp
 # ══════════════════════════════════════════════════════════════════════════

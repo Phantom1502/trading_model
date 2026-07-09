@@ -37,6 +37,7 @@ from app.llama.dataset import (
     get_or_build_val_dataset,
     get_or_build_shard_dataset,
     clear_previous_shard_cache,
+    main_process_first_if_distributed
 )
 from app.llama.state import (
     ensure_dirs,
@@ -89,7 +90,10 @@ def main(cfg: Config = None):
     push_tokenizer_once(tokenizer, cfg)   # 1 lần duy nhất, cố định xuyên suốt
 
     # ── Val set — xử lý 1 lần, cố định xuyên suốt toàn bộ quá trình ─────────
-    lm_val = get_or_build_val_dataset(cfg, tokenizer)
+    # ── Val set ──
+    with main_process_first_if_distributed(cfg):
+        lm_val = get_or_build_val_dataset(cfg, tokenizer)
+    # ── ──
     data_collator = build_data_collator(tokenizer)
 
     # ── Model ────────────────────────────────────────────────────────────────
@@ -98,6 +102,15 @@ def main(cfg: Config = None):
     print(f"Model params: {params['total']/1e6:.1f}M "
           f"(embedding: {params['embedding']/1e6:.1f}M, "
           f"non-embedding: {params['non_embedding']/1e6:.1f}M)")
+    
+    # QUAN TRỌNG: phải chuyển model sang XLA device TRƯỚC khi tạo optimizer —
+    # optimizer chụp tham chiếu tensor tham số lúc khởi tạo, nếu model còn ở
+    # CPU thì optimizer sẽ lệch device so với model sau khi Trainer/accelerate
+    # chuyển model sang TPU, gây lỗi "not on the same device".
+    if cfg.train.hardware == "tpu":
+        import torch_xla.core.xla_model as xm
+        model = model.to(xm.xla_device())
+        print(f"Model đã chuyển sang XLA device: {xm.xla_device()}")
 
     # ── Optimizer + scheduler — tạo 1 LẦN cho toàn bộ hành trình nhiều-shard ─
     optimizer, scheduler, total_steps = build_optimizer_and_scheduler(model, cfg)
@@ -113,7 +126,8 @@ def main(cfg: Config = None):
     # ── Vòng lặp chính — xử lý tuần tự từng shard, resume đúng theo 2 trường hợp ─
     for i in range(state["shard_index"], len(shard_files)):
         shard_path = shard_files[i]
-        lm_shard = get_or_build_shard_dataset(cfg, tokenizer, i, shard_path)
+        with main_process_first_if_distributed(cfg):
+            lm_shard = get_or_build_shard_dataset(cfg, tokenizer, i, shard_path)
 
         trainer = Trainer(
             model=model,
