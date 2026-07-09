@@ -215,9 +215,9 @@ def get_tpu_config() -> Config:
     # attn_implementation="eager" materialize full attention matrix mỗi layer
     # (không có flash-attn kernel) -> OOM 197G/15.75G HBM ở batch=16.
     # Giữ effective batch = 128 như cũ bằng cách tăng grad_accum bù lại.
-    cfg.train.per_device_train_batch = 2
-    cfg.train.per_device_eval_batch = 2
-    cfg.train.grad_accum_steps = 64   # 2 x 64 = 128, giữ effective batch cũ
+    cfg.train.per_device_train_batch = 1
+    cfg.train.per_device_eval_batch = 1
+    cfg.train.grad_accum_steps = 128   # 2 x 64 = 128, giữ effective batch cũ
     return cfg
 
 
