@@ -168,8 +168,8 @@ def run(cfg: Config = None):
         cfg = get_default_config()
 
     if cfg.train.hardware == "tpu":
-        from accelerate import notebook_launcher
-        notebook_launcher(main, args=(cfg,), num_processes=cfg.train.num_tpu_cores)
+        import torch_xla
+        torch_xla.launch(main, args=(cfg,))   # thay cho notebook_launcher
     else:
         main(cfg)
 
