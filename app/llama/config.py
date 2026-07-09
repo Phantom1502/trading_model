@@ -208,10 +208,16 @@ def get_tpu_config() -> Config:
     cfg.train.bf16 = True
     cfg.model.attn_implementation = "eager"
     cfg.train.dataloader_num_workers = 0
-    cfg.train.gradient_checkpointing = False   # tắt trên TPU — model nhỏ, TPU dư
-            # VRAM, và torch.utils.checkpoint (cả 2 kiểu reentrant/non-reentrant)
-            # không tương thích với torch_xla (gọi getattr(torch, "xla") để lưu
-            # RNG state, nhưng không tồn tại torch.xla theo cách đó).
+    cfg.train.gradient_checkpointing = False
+
+    # Giảm batch size vì thiếu checkpointing (compat issue với XLA) khiến
+    # activation của cả 30 layer phải giữ hết cho backward — cộng với
+    # attn_implementation="eager" materialize full attention matrix mỗi layer
+    # (không có flash-attn kernel) -> OOM 197G/15.75G HBM ở batch=16.
+    # Giữ effective batch = 128 như cũ bằng cách tăng grad_accum bù lại.
+    cfg.train.per_device_train_batch = 2
+    cfg.train.per_device_eval_batch = 2
+    cfg.train.grad_accum_steps = 64   # 2 x 64 = 128, giữ effective batch cũ
     return cfg
 
 
