@@ -17,6 +17,7 @@ from typing import Optional
 
 from huggingface_hub import login, snapshot_download
 from transformers.trainer_utils import get_last_checkpoint
+from accelerate import PartialState
 
 from app.llama.config import Config
 
@@ -37,7 +38,14 @@ def push_tokenizer_once(tokenizer, cfg: Config) -> None:
     """Push tokenizer lên Hub — CHỈ CẦN GỌI 1 LẦN trước khi vào vòng lặp train
     (tokenizer cố định xuyên suốt toàn bộ quá trình, không đổi theo shard/step).
     Nằm trên branch "main" của repo, không bị các lần push checkpoint (branch
-    "last-checkpoint") ghi đè — xem readme.md mục 6.2b."""
+    "last-checkpoint") ghi đè — xem readme.md mục 6.2b.
+
+    QUAN TRỌNG: guard bằng is_main_process — khi chạy multi-process (8 core
+    TPU qua notebook_launcher), main() được TÁM process gọi song song; không
+    guard sẽ khiến cả 8 process cùng push lên Hub 1 lúc (lãng phí băng thông,
+    có thể race ghi đè lẫn nhau giữa các lần push)."""
+    if not PartialState().is_main_process:
+        return
     if not cfg.hub.repo_id:
         print("  ⚠ cfg.hub.repo_id trống — bỏ qua push tokenizer lên Hub.")
         return

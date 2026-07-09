@@ -76,12 +76,20 @@ class TrainConfig:
     trên Colab T4 (readme.md mục 2 và 4)."""
     device: str = "cuda"
 
+    # "cuda" | "tpu" | "cpu" — MỌI khác biệt hành vi giữa GPU/TPU (precision,
+    # attn_implementation, cách launch multi-process) đều dẫn xuất từ field
+    # này, không rải rác if/else trong train.py. Đổi hardware = chỉ đổi 1
+    # dòng config (+ gọi get_tpu_config() cho tiện, xem bên dưới).
+    hardware: str = "cuda"
+    num_tpu_cores: int = 8   # Kaggle hiện cấp TPU v5e-8 (8 chip) — dùng khi
+                              # hardware="tpu" để notebook_launcher biết fork mấy process
+
     output_dir: Optional[str] = None   # None -> f"{data.drive_root}/checkpoints"
     state_path: Optional[str] = None   # None -> f"{train.output_dir}/shard_state.json"
 
     per_device_train_batch: int = 16
     per_device_eval_batch: int = 16
-    grad_accum_steps: int = 64           # effective batch = 16 * 64 = 1024
+    grad_accum_steps: int = 8           # effective batch = 16 * 8 = 128
 
     lr: float = 3e-4
     weight_decay: float = 0.1
@@ -94,7 +102,12 @@ class TrainConfig:
     total_tokens_estimate: int = 14_000_000_000   # 14 file x ~1B token
     warmup_ratio: float = 0.03
 
+    # CHỈ 1 trong 2 được True — fp16 cho GPU (T4 không hỗ trợ bf16 tốt), bf16
+    # cho TPU (không có hardware AMP scaler cho fp16, TPU native hỗ trợ bf16).
+    # get_tpu_config() tự set đúng cặp này, không cần nhớ tay.
     fp16: bool = True
+    bf16: bool = False
+
     gradient_checkpointing: bool = True
     # Bắt buộc False, không dùng mặc định True của PyTorch — xem readme.md mục 2.
     gradient_checkpointing_use_reentrant: bool = False
@@ -175,6 +188,29 @@ def get_default_config() -> Config:
     return cfg
 
 
+def get_tpu_config() -> Config:
+    """
+    Config cho Kaggle TPU v5e-8 (8 chip) — CHỈ khác get_default_config() ở
+    đúng những field bị ảnh hưởng bởi khác biệt phần cứng GPU/TPU (xem
+    research note khi thêm field này): precision, attn_implementation, số
+    process cần fork. Mọi field khác (kiến trúc model, path data, optimizer
+    hyperparams...) giữ nguyên — đây chính là điểm "chỉ cần đổi config".
+
+    Cách dùng (bắt buộc launch qua notebook_launcher để chạy đủ 8 core, xem
+    train.py::run()):
+        from app.llama.config import get_tpu_config
+        from app.llama.train import run
+        run(get_tpu_config())
+    """
+    cfg = get_default_config()
+    cfg.train.hardware = "tpu"
+    cfg.train.fp16 = False
+    cfg.train.bf16 = True
+    cfg.model.attn_implementation = "eager"   # sdpa không đảm bảo lower tốt sang XLA
+    cfg.train.dataloader_num_workers = 0      # an toàn cho mọi hardware, giữ nguyên
+    return cfg
+
+
 def validate_config(cfg: Config) -> None:
     """
     Kiểm tra sớm các lỗi cấu hình PHỔ BIẾN nhất trước khi tốn thời gian
@@ -207,6 +243,18 @@ def validate_config(cfg: Config) -> None:
             f"— 2 giá trị này phải khớp nhau, nếu không model sẽ không tận dụng "
             f"hết context hoặc lỗi khi seq dài hơn max_position_embeddings."
         )
+
+    # ── Hardware/precision: fp16 và bf16 không được cùng True (TrainingArguments
+    # sẽ raise), và TPU không nên dùng fp16 (không có hardware AMP scaler).
+    if cfg.train.fp16 and cfg.train.bf16:
+        errors.append("train.fp16 và train.bf16 không được CÙNG True — chọn đúng 1 theo hardware "
+                      "(fp16 cho GPU T4, bf16 cho TPU).")
+    if cfg.train.hardware == "tpu" and cfg.train.fp16:
+        errors.append("train.hardware='tpu' nhưng train.fp16=True — TPU không có hardware AMP "
+                      "scaler cho fp16, dùng train.bf16=True thay vào (xem get_tpu_config()).")
+    if cfg.train.hardware == "tpu" and cfg.model.attn_implementation == "sdpa":
+        print("  ⚠ CẢNH BÁO: hardware='tpu' nhưng attn_implementation='sdpa' — sdpa không đảm bảo "
+              "lower tốt sang XLA (dễ recompile liên tục), khuyến nghị đổi sang 'eager' cho TPU.")
 
     # ── save_steps phải là bội số của eval_steps (ràng buộc cứng của
     # TrainingArguments khi load_best_model_at_end=True — luôn True trong

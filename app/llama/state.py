@@ -20,6 +20,8 @@ import json
 import os
 from typing import Optional
 
+from accelerate import PartialState
+
 from app.llama.config import Config
 
 
@@ -40,6 +42,17 @@ def load_state(cfg: Config) -> dict:
 
 
 def save_state(cfg: Config, state: dict) -> None:
+    """
+    QUAN TRỌNG (bug thật đã lường trước, chưa gặp nhưng SẼ gặp trên TPU):
+    khi chạy multi-process (vd 8 core TPU qua accelerate.notebook_launcher),
+    hàm main() được TÁM process cùng gọi song song — nếu save_state() ghi
+    file vô điều kiện, cả 8 process sẽ cùng ghi đè shard_state.json cùng
+    lúc, dễ tạo file JSON hỏng (ghi dở dang, xen kẽ). CHỈ process chính
+    (rank 0) mới được ghi; các process còn lại no-op — chúng vẫn cần giá trị
+    trả về của mark_shard_completed() để tiếp tục vòng lặp đúng, chỉ không
+    tự ghi ra đĩa (xem mark_shard_completed bên dưới)."""
+    if not PartialState().is_main_process:
+        return
     json.dump(state, open(cfg.train.state_path, "w"))
 
 

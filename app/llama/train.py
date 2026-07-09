@@ -51,19 +51,7 @@ from app.llama.trainer_utils import (
     build_data_collator,
 )
 
-from transformers import TrainerCallback
 
-class ShowLRCallback(TrainerCallback):
-    def on_step_end(self, args, state, control, **kwargs):
-        # Lấy thông tin từ progress bar hiện tại (nếu có)
-        if state.is_local_process_zero and hasattr(state, 'progress_bar') and state.progress_bar is not None:
-            # Lấy learning rate hiện tại từ optimizer (nếu đã được khởi tạo)
-            if kwargs.get('optimizer') is not None:
-                # Lấy lr của nhóm tham số đầu tiên
-                current_lr = kwargs['optimizer'].param_groups[0]['lr']
-                # Cập nhật thông tin hiển thị ở cuối thanh progress bar
-                state.progress_bar.set_postfix(lr=f"{current_lr:.2e}")
-                
 def main(cfg: Config = None):
     if cfg is None:
         cfg = get_default_config()
@@ -74,12 +62,20 @@ def main(cfg: Config = None):
     ensure_dirs(cfg)
     torch.manual_seed(cfg.seed)
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    cfg.train.device = device
-    print(f"Device: {device}")
-    if device == "cuda":
-        print(f"GPU : {torch.cuda.get_device_name(0)}")
-        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
+    # Device chỉ dùng để LOG — TrainingArguments tự phát hiện GPU/TPU/CPU
+    # thật sự dùng lúc build Trainer (accelerate lo phần đó), không đọc lại
+    # cfg.train.device. Nhánh hardware="tpu" không gọi torch.cuda.is_available()
+    # vì không có ý nghĩa gì trên máy chỉ có TPU.
+    if cfg.train.hardware == "tpu":
+        device_str = "tpu"
+        print(f"Hardware: TPU ({cfg.train.num_tpu_cores} core, qua run())")
+    else:
+        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Device: {device_str}")
+        if device_str == "cuda":
+            print(f"GPU : {torch.cuda.get_device_name(0)}")
+            print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
+    cfg.train.device = device_str
 
     # ── Hugging Face Hub login (tùy chọn, chỉ cảnh báo nếu thiếu) ────────────
     hub_login(cfg)
@@ -126,7 +122,6 @@ def main(cfg: Config = None):
             eval_dataset=lm_val,
             data_collator=data_collator,
             optimizers=(optimizer, scheduler),
-            callbacks=[ShowLRCallback()]
         )
 
         # --- xác định đây là "resume giữa chừng shard này" hay "bắt đầu shard mới" ---
@@ -153,5 +148,31 @@ def main(cfg: Config = None):
     print("🎉 Đã train xong toàn bộ shard.")
 
 
+def run(cfg: Config = None):
+    """
+    Entry point NÊN DÙNG thay vì gọi main() trực tiếp — đây là chỗ DUY NHẤT
+    biết cách "launch" khác nhau giữa GPU/CPU (gọi main() bình thường) và
+    TPU (phải fork cfg.train.num_tpu_cores process qua accelerate, mỗi
+    process chạy 1 core trong 8 core của TPU v5e-8 trên Kaggle — main()
+    KHÔNG tự động chạy song song nếu gọi trực tiếp trên TPU).
+
+    Đổi hardware GPU <-> TPU CHỈ CẦN đổi cfg (get_default_config() vs
+    get_tpu_config()) — không cần sửa gì ở đây hay bất kỳ module nào khác.
+
+    LƯU Ý: trên TPU, main() sẽ được gọi TÁM LẦN song song (1 lần/core) —
+    mọi side-effect ghi file (state.py, hub_utils.py) đã tự guard chỉ chạy
+    ở process chính (accelerate.PartialState().is_main_process), không cần
+    lo race condition khi dùng run() thay vì gọi main() tay.
+    """
+    if cfg is None:
+        cfg = get_default_config()
+
+    if cfg.train.hardware == "tpu":
+        from accelerate import notebook_launcher
+        notebook_launcher(main, args=(cfg,), num_processes=cfg.train.num_tpu_cores)
+    else:
+        main(cfg)
+
+
 if __name__ == "__main__":
-    main()
+    run()

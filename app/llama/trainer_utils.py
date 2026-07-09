@@ -42,6 +42,7 @@ def build_training_args(cfg: Config) -> TrainingArguments:
         gradient_checkpointing=cfg.train.gradient_checkpointing,
         gradient_checkpointing_kwargs={"use_reentrant": cfg.train.gradient_checkpointing_use_reentrant},
         fp16=cfg.train.fp16,
+        bf16=cfg.train.bf16,
         dataloader_num_workers=cfg.train.dataloader_num_workers,
         logging_steps=cfg.train.logging_steps,
         eval_strategy="steps",
