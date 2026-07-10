@@ -87,7 +87,9 @@ class TrainConfig:
     epochs_per_chunk  : int   = 1
     total_chunks      : int   = -1    # -1 = train hết toàn bộ dataset
     
-    span_noise_ratio : float = 0.05  # tỷ lệ nhiễu span trong attention mask
+    # Span noise
+    use_span_noise      : bool  = True  # có dùng span noise trong attention mask không
+    span_noise_ratio    : float = 0.05  # tỷ lệ nhiễu span trong attention mask
 
     # Cosine annealing with warm restarts (SGDR)
     lr_decay_cycle_steps : int   = 10_000
@@ -132,17 +134,53 @@ def get_default_config() -> Config:
 
 
 def get_small_config() -> Config:
-    """Config nhỏ để test nhanh trên máy yếu / Colab free tier."""
     cfg = Config()
-    cfg.model.d_model    = 64
-    cfg.model.n_heads    = 2
-    cfg.model.n_layers   = 2
-    cfg.model.max_seq    = 64
-    cfg.data.chunk_size  = 2_000
-    cfg.data.seg_len     = 64
-    cfg.train.batch_size = 4
+    cfg.model.d_model  = 512
+    cfg.model.n_heads  = 2
+    cfg.model.n_layers = 2
+    cfg.model.max_seq  = 512
+
+    cfg.data.chunk_size  = 100_000
+    cfg.data.seg_len     = 512
+    
+    # use_span_noise = True, span_noise_ratio = 0.05
+    cfg.train.use_span_noise   = False
+    
+    # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
+    # estimated tokens: 32 * 64 * 10_000 * 512 = 10,485,760,000 tokens → ~10B tokens
+    cfg.train.lr                    = 3e-4
+    cfg.train.warmup_steps          = 200
+    cfg.train.lr_decay_cycle_steps  = 10_000   
+    cfg.train.lr_min_ratio          = 0.1
+    cfg.train.batch_size            = 32
+    cfg.train.grad_accum            = 64
+    cfg.train.total_chunks          = -1
     return cfg
 
+def get_small_config_span_noise() -> Config:
+    cfg = Config()
+    cfg.model.d_model  = 512
+    cfg.model.n_heads  = 2
+    cfg.model.n_layers = 2
+    cfg.model.max_seq  = 512
+
+    cfg.data.chunk_size  = 100_000
+    cfg.data.seg_len     = 512
+    
+    # use_span_noise = True, span_noise_ratio = 0.05
+    cfg.train.use_span_noise   = True
+    cfg.train.span_noise_ratio = 0.1
+    
+    # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
+    # estimated tokens: 32 * 64 * 10_000 * 512 = 10,485,760,000 tokens → ~10B tokens
+    cfg.train.lr                    = 3e-4
+    cfg.train.warmup_steps          = 200
+    cfg.train.lr_decay_cycle_steps  = 10_000   
+    cfg.train.lr_min_ratio          = 0.1
+    cfg.train.batch_size            = 32
+    cfg.train.grad_accum            = 64
+    cfg.train.total_chunks          = -1
+    return cfg
 
 def get_100m_config() -> Config:
     """Config ~100M params cho Colab T4."""
@@ -174,6 +212,10 @@ def get_110m_config() -> Config:
 
     cfg.data.chunk_size  = 20_000
     cfg.data.seg_len     = 512
+    
+    # use_span_noise = True, span_noise_ratio = 0.05
+    cfg.train.use_span_noise   = True
+    cfg.train.span_noise_ratio = 0.05
     
     # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
     # estimated tokens: 32 * 64 * 10_000 * 512 = 10,485,760,000 tokens → ~10B tokens
