@@ -47,9 +47,9 @@ class SelfAttentionRoPE(nn.Module):
 
         out = F.scaled_dot_product_attention(
             query=q, key=k, value=v,
-            attn_mask=attn_mask,
+            #attn_mask=attn_mask,
             dropout_p=dropout_p,
-            is_causal=False,
+            is_causal=True,
         )
 
         out = out.transpose(1, 2).contiguous().view(B, T, D)

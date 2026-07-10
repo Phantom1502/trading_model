@@ -72,12 +72,6 @@ class MemoryLM(nn.Module):
 
         return self.lm_head(self.norm_out(x))
 
-
-def causal_mask(T: int, device: torch.device) -> torch.Tensor:
-    """Causal mask additive cho autoregressive attention."""
-    mask = torch.triu(torch.ones(T, T, device=device), diagonal=1)
-    return mask.masked_fill(mask.bool(), float("-inf"))
-
 def build_model(cfg) -> MemoryLM:
     """Entry point xây model từ ModelConfig."""
     return MemoryLM(

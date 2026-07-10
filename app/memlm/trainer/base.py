@@ -27,7 +27,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from app.memlm.model import causal_mask
 from app.memlm.utils import TrainLogger, log_eval, log_bench, save_checkpoint
 from app.memlm.benchmark_ict import run_all_ict_benchmarks
 
@@ -116,11 +115,9 @@ class BaseTrainer:
         """
         ids    = batch["input_ids"].to(self.device)
         labels = batch["labels"].to(self.device)
-        T      = ids.shape[1]
-        mask   = causal_mask(T, self.device)
 
         with torch.amp.autocast("cuda", enabled=(self.device.type == "cuda" and self.cfg.train.mixed_precision)):
-            logits   = self.model(ids, attn_mask=mask)
+            logits   = self.model(ids)
             loss_sum = self.compute_loss(logits, labels)  # reduction="sum"
 
         # Chuẩn hóa GRADIENT theo tổng token của CẢ cửa sổ accumulation — đây
@@ -202,9 +199,7 @@ class BaseTrainer:
                 break
             ids    = batch["input_ids"].to(self.device)
             labels = batch["labels"].to(self.device)
-            T      = ids.shape[1]
-            mask   = causal_mask(T, self.device)
-            logits = self.model(ids, attn_mask=mask)
+            logits = self.model(ids)
 
             total_loss_sum += self.compute_loss(logits, labels).item()
             total_tokens   += (labels != -100).sum().item()

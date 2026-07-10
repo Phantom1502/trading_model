@@ -41,8 +41,6 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 from typing import List
 
-from app.memlm.model import causal_mask
-
 
 # ══════════════════════════════════════════════════════════════════════════
 # Cấu trúc dữ liệu
@@ -187,7 +185,7 @@ def avg_logprob_per_token(
 
     ids_t     = torch.tensor([full_ids], dtype=torch.long, device=device)
     T         = ids_t.size(1)
-    logits    = model(ids_t, attn_mask=causal_mask(T, device))
+    logits    = model(ids_t)
     log_probs = F.log_softmax(logits[0], dim=-1)
 
     n_prompt = T - len(completion_ids)

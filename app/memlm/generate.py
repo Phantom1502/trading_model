@@ -32,8 +32,6 @@ if _REPO_ROOT not in sys.path:
 import torch
 import torch.nn.functional as F
 
-from app.memlm.model import causal_mask
-
 
 # ══════════════════════════════════════════════════════════════════════════
 # Sampling
@@ -105,9 +103,8 @@ def generate(
         # Sliding window: giữ max_seq token cuối
         if ids.size(1) > max_seq:
             ids = ids[:, -max_seq:]
-
-        T      = ids.size(1)
-        logits = model(ids, attn_mask=causal_mask(T, device))
+            
+        logits = model(ids)
         next_tok = _sample_next(logits[:, -1, :], temperature, top_k, top_p)
 
         generated.append(next_tok)
