@@ -1,10 +1,3 @@
-"""
-model/attention.py — Self-Attention với RoPE
-==============================================
-SelfAttentionRoPE : thay nn.MultiheadAttention, hỗ trợ RoPE và no-bias
-"""
-
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,10 +21,17 @@ class SelfAttentionRoPE(nn.Module):
         for layer in [self.Wq, self.Wk, self.Wv, self.Wo]:
             nn.init.normal_(layer.weight, std=0.02)
 
-        # FIX 1: chỉ lưu số dropout thô, không tính self.training ở đây
         self.dropout = dropout
 
-    def forward(self, x, freqs_cis, attn_mask=None):
+    def forward(
+        self,
+        x,
+        freqs_cis,
+        attn_mask=None,          # không dùng nữa (is_causal thay thế), giữ để không vỡ call site cũ
+        position_offset: int = 0,
+        past_kv=None,            # (past_k, past_v) hoặc None
+        use_cache: bool = False,
+    ):
         B, T, D = x.shape
         h, dh   = self.n_heads, self.d_head
         x_normed = self.norm(x)
@@ -40,17 +40,29 @@ class SelfAttentionRoPE(nn.Module):
         k = self.Wk(x_normed).view(B, T, h, dh).transpose(1, 2)
         v = self.Wv(x_normed).view(B, T, h, dh).transpose(1, 2)
 
-        q = apply_rope(q, freqs_cis)
-        k = apply_rope(k, freqs_cis)
+        q = apply_rope(q, freqs_cis, offset=position_offset)
+        k = apply_rope(k, freqs_cis, offset=position_offset)
+
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
+
+        present = (k, v) if use_cache else None
 
         dropout_p = self.dropout if self.training else 0.0
 
+        # is_causal=True chỉ đúng khi Q, K cùng độ dài (prefill — mỗi token
+        # còn cần che token TƯƠNG LAI trong cùng lô). Khi decode với cache
+        # (K dài hơn Q, thường Q chỉ có 1 token mới), không cần mask: token
+        # mới luôn ở vị trí CUỐI, được phép attend hết K/V hiện có.
+        is_causal = (k.shape[2] == q.shape[2])
+
         out = F.scaled_dot_product_attention(
             query=q, key=k, value=v,
-            #attn_mask=attn_mask,
             dropout_p=dropout_p,
-            is_causal=True,
+            is_causal=is_causal,
         )
 
         out = out.transpose(1, 2).contiguous().view(B, T, D)
-        return self.Wo(out)
+        return self.Wo(out), present

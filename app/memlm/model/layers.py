@@ -54,29 +54,17 @@ def precompute_freqs_cis(d_head: int, max_seq: int, base: float = 10000.0) -> to
     freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
     return freqs_cis
 
-
-def apply_rope(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+def apply_rope(x: torch.Tensor, freqs_cis: torch.Tensor, offset: int = 0) -> torch.Tensor:
     """
-    Áp dụng phép xoay RoPE lên Q hoặc K.
-
-    x        : (B, n_heads, T, d_head)
-    freqs_cis: (T, d_head/2) complex
+    offset: vị trí TUYỆT ĐỐI của token đầu tiên trong x. Quan trọng khi có
+    KV cache — x lúc đó chỉ chứa token MỚI (T có thể = 1), góc xoay phải
+    tính theo vị trí thật trong toàn chuỗi, không phải luôn bắt đầu từ 0.
     """
     B, H, T, D = x.shape
-
-    # Chuyển x thành dạng complex: ghép cặp (x0,x1), (x2,x3), ...
-    x_complex = torch.view_as_complex(
-        x.float().reshape(B, H, T, D // 2, 2)
-    )                                                   # (B, H, T, D/2)
-
-    freqs_cis = freqs_cis[:T].unsqueeze(0).unsqueeze(0)  # (1, 1, T, D/2)
-
-    # Xoay bằng phép nhân số phức
-    x_rotated = x_complex * freqs_cis                    # (B, H, T, D/2)
-
-    # Chuyển lại về real, ghép về shape gốc
-    out = torch.view_as_real(x_rotated).reshape(B, H, T, D)
-    return out.type_as(x)
+    x_complex = torch.view_as_complex(x.float().reshape(B, H, T, D // 2, 2))
+    freqs_slice = freqs_cis[offset:offset + T].unsqueeze(0).unsqueeze(0)
+    x_rotated = x_complex * freqs_slice
+    return torch.view_as_real(x_rotated).reshape(B, H, T, D).type_as(x)
 
 
 # ══════════════════════════════════════════════════════════════════════════

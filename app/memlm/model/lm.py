@@ -56,21 +56,35 @@ class MemoryLM(nn.Module):
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
         return sum(p.numel() for p in self.parameters())
 
-    def forward(self, input_ids: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
-        """
-        input_ids : (B, T)
-        Returns   : logits (B, T, vocab_size)
-        """
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attn_mask: torch.Tensor = None,   # không dùng nữa, giữ để tương thích call site cũ
+        past_key_values: list = None,     # list[(k, v)] theo từng layer, hoặc None
+        use_cache: bool = False,
+    ):
         B, T   = input_ids.shape
         device = input_ids.device
+
+        position_offset = past_key_values[0][0].shape[2] if past_key_values is not None else 0
 
         x         = self.drop(self.token_emb(input_ids))
         freqs_cis = self.freqs_cis.to(device)
 
-        for block in self.blocks:
-            x = block(x, freqs_cis=freqs_cis, attn_mask=attn_mask)
+        presents = [] if use_cache else None
+        for i, block in enumerate(self.blocks):
+            past_kv = past_key_values[i] if past_key_values is not None else None
+            x, present = block(
+                x, freqs_cis=freqs_cis,
+                position_offset=position_offset,
+                past_kv=past_kv,
+                use_cache=use_cache,
+            )
+            if use_cache:
+                presents.append(present)
 
-        return self.lm_head(self.norm_out(x))
+        logits = self.lm_head(self.norm_out(x))
+        return (logits, presents) if use_cache else logits
 
 def build_model(cfg) -> MemoryLM:
     """Entry point xây model từ ModelConfig."""

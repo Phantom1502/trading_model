@@ -66,50 +66,40 @@ def _sample_next(
 
 @torch.no_grad()
 def generate(
-    model,
-    tokenizer,
-    cfg,
-    prompt         : str,
-    max_new        : int   = 100,
-    temperature    : float = 0.8,
-    top_k          : int   = 50,
-    top_p          : float = 0.95,
-    new_token_only : bool  = False,
-) -> str:
-    """
-    Sinh văn bản từ prompt với sliding window khi context vượt max_seq.
-
-    Args:
-        prompt        : văn bản đầu vào
-        max_new       : số token tối đa sinh thêm
-        temperature   : nhiệt độ sampling
-        top_k         : top-k filtering
-        top_p         : nucleus sampling
-        new_token_only: True → chỉ trả về phần sinh thêm
-    """
+    model, tokenizer, cfg, prompt,
+    max_new=100, temperature=0.8, top_k=50, top_p=0.95, new_token_only=False,
+):
     device  = next(model.parameters()).device
     max_seq = cfg.model.max_seq
     model.eval()
 
     prompt_ids = tokenizer.encode(prompt, add_special_tokens=False)
-
-    # Cắt prompt về max_seq nếu quá dài
     active = prompt_ids[-max_seq:] if len(prompt_ids) > max_seq else prompt_ids
-    ids    = torch.tensor([active], dtype=torch.long, device=device)
+    ids = torch.tensor([active], dtype=torch.long, device=device)
 
     generated = []
+    past_key_values = None
+    cur_len = 0
+    next_tok = None
 
-    for _ in range(max_new):
-        # Sliding window: giữ max_seq token cuối
-        if ids.size(1) > max_seq:
-            ids = ids[:, -max_seq:]
-            
-        logits = model(ids)
+    for step in range(max_new):
+        if step == 0:
+            logits, past_key_values = model(ids, use_cache=True)
+            cur_len = ids.size(1)
+        else:
+            if cur_len >= max_seq:
+                trim = cur_len - (max_seq - 1)
+                past_key_values = [
+                    (k[:, :, trim:, :], v[:, :, trim:, :]) for k, v in past_key_values
+                ]
+                cur_len -= trim
+
+            next_input = torch.tensor([[next_tok]], dtype=torch.long, device=device)
+            logits, past_key_values = model(next_input, past_key_values=past_key_values, use_cache=True)
+            cur_len += 1
+
         next_tok = _sample_next(logits[:, -1, :], temperature, top_k, top_p)
-
         generated.append(next_tok)
-        ids = torch.cat([ids, torch.tensor([[next_tok]], device=device)], dim=1)
-
         if next_tok == tokenizer.eos_id:
             break
 
