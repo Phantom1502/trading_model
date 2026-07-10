@@ -151,8 +151,10 @@ def get_small_config() -> Config:
     # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
     # estimated tokens: 32 * 64 * 1_000 * 512 = 1,048,576,000 tokens → ~10B tokens
     cfg.train.lr                    = 3e-4
-    cfg.train.warmup_steps          = 200
+    
     cfg.train.lr_decay_cycle_steps  = 1_000   
+    cfg.train.warmup_steps          = int(cfg.train.lr_decay_cycle_steps * 0.03) # cfg.train.lr_decay_cycle_steps * 0.03
+
     cfg.train.lr_min_ratio          = 0.1
     cfg.train.batch_size  = 64
     cfg.train.grad_accum  = 32
@@ -182,8 +184,9 @@ def get_small_config_span_noise() -> Config:
     # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
     # estimated tokens: 32 * 64 * 1_000 * 512 = 1,048,576,000 tokens → ~10B tokens
     cfg.train.lr                    = 3e-4
-    cfg.train.warmup_steps          = 200
+    
     cfg.train.lr_decay_cycle_steps  = 1_000   
+    cfg.train.warmup_steps          = int(cfg.train.lr_decay_cycle_steps * 0.03) # cfg.train.lr_decay_cycle_steps * 0.03
     cfg.train.lr_min_ratio          = 0.1
     cfg.train.batch_size  = 64
     cfg.train.grad_accum  = 32
