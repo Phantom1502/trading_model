@@ -86,10 +86,6 @@ class TrainConfig:
     max_grad_norm     : float = 1.0
     epochs_per_chunk  : int   = 1
     total_chunks      : int   = -1    # -1 = train hết toàn bộ dataset
-    
-    # Span noise
-    use_span_noise      : bool  = True  # có dùng span noise trong attention mask không
-    span_noise_ratio    : float = 0.05  # tỷ lệ nhiễu span trong attention mask
 
     # Cosine annealing with warm restarts (SGDR)
     lr_decay_cycle_steps : int   = 10_000
@@ -146,8 +142,6 @@ def get_small_config() -> Config:
     cfg.data.sequential_mode = True
     cfg.data.window_stride   = cfg.data.seg_len  # No Overlap
     
-    # use_span_noise = True, span_noise_ratio = 0.05
-    cfg.train.use_span_noise   = False
     cfg.train.eval_every = 99_999_999
     cfg.train.save_every = 99_999_999
 
@@ -179,10 +173,6 @@ def get_small_config_span_noise() -> Config:
     
     cfg.train.eval_every = 99_999_999
     cfg.train.save_every = 99_999_999
-
-    # use_span_noise = True, span_noise_ratio = 0.05
-    cfg.train.use_span_noise   = True
-    cfg.train.span_noise_ratio = 0.1
     
     # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
     # estimated tokens: 32 * 64 * 1_000 * 512 = 1,048,576,000 tokens → ~10B tokens
@@ -220,27 +210,32 @@ def get_100m_config() -> Config:
 
 
 def get_110m_config() -> Config:
-    """Config ~110M params tối ưu cho Colab T4."""
+    # Model config
     cfg = Config()
-    cfg.model.d_model  = 512
-    cfg.model.n_heads  = 8
-    cfg.model.n_layers = 30
-    cfg.model.max_seq  = 512
+    cfg.model.d_model               = 512
+    cfg.model.n_heads               = 8
+    cfg.model.n_layers              = 30
+    cfg.model.max_seq               = 512
 
-    cfg.data.chunk_size  = 20_000
-    cfg.data.seg_len     = 512
+    # Data config
+    cfg.data.chunk_size             = 20_000
+    cfg.data.seg_len                = 512
     
-    # use_span_noise = True, span_noise_ratio = 0.05
-    cfg.train.use_span_noise   = False
-    cfg.train.span_noise_ratio = 0.05
+    cfg.data.sequential_mode        = True
+    cfg.data.window_stride          = cfg.data.seg_len  # No Overlap
     
+    # Training config
     # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
     # estimated tokens: 32 * 64 * 10_000 * 512 = 10,485,760,000 tokens → ~10B tokens
     cfg.train.lr                    = 3e-4
-    cfg.train.warmup_steps          = 200
-    cfg.train.lr_decay_cycle_steps  = 10_000   
-    cfg.train.lr_min_ratio          = 0.03 # target LR min = 3e-4 * 0.03 = 9e-6
-    cfg.train.batch_size  = 32
-    cfg.train.grad_accum  = 64
+    cfg.train.lr_min_ratio          = 0.1 # target LR min = 3e-4 * 0.03 = 9e-6
+    cfg.train.lr_decay_cycle_steps  = 10_000
+    cfg.train.warmup_steps          = int(cfg.train.lr_decay_cycle_steps * 0.03)   
+    
+    cfg.train.batch_size            = 32
+    cfg.train.grad_accum            = 64
     cfg.train.total_chunks          = -1
+    
+    cfg.train.eval_every            = 99_999_999
+    cfg.train.save_every            = 99_999_999
     return cfg
