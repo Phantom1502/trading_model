@@ -167,6 +167,9 @@ def get_small_config_span_noise() -> Config:
     cfg.data.chunk_size  = 100_000
     cfg.data.seg_len     = 512
     
+    cfg.data.sequential_mode = True
+    cfg.data.window_stride   = cfg.data.seg_len  # No Overlap
+
     # use_span_noise = True, span_noise_ratio = 0.05
     cfg.train.use_span_noise   = True
     cfg.train.span_noise_ratio = 0.1
@@ -191,6 +194,9 @@ def get_100m_config() -> Config:
     cfg.model.max_seq  = 512
 
     cfg.data.chunk_size = 10_000
+    cfg.data.seg_len     = 512
+    cfg.data.sequential_mode = True
+    cfg.data.window_stride   = cfg.data.seg_len  # No Overlap
 
     cfg.train.lr                   = 3e-4
     cfg.train.warmup_steps         = 200
