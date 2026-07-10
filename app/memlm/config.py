@@ -145,7 +145,9 @@ def get_small_config() -> Config:
     
     # use_span_noise = True, span_noise_ratio = 0.05
     cfg.train.use_span_noise   = False
-    
+    cfg.train.eval_every = 99_999_999
+    cfg.train.save_every = 99_999_999
+
     # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
     # estimated tokens: 32 * 64 * 1_000 * 512 = 1,048,576,000 tokens → ~10B tokens
     cfg.train.lr                    = 3e-4
@@ -169,6 +171,9 @@ def get_small_config_span_noise() -> Config:
     
     cfg.data.sequential_mode = True
     cfg.data.window_stride   = cfg.data.seg_len  # No Overlap
+    
+    cfg.train.eval_every = 99_999_999
+    cfg.train.save_every = 99_999_999
 
     # use_span_noise = True, span_noise_ratio = 0.05
     cfg.train.use_span_noise   = True
