@@ -140,7 +140,7 @@ def get_small_config() -> Config:
     cfg.model.n_layers = 2
     cfg.model.max_seq  = 512
 
-    cfg.data.chunk_size  = 100_000
+    cfg.data.chunk_size  = 40_000
     cfg.data.seg_len     = 512
     
     # use_span_noise = True, span_noise_ratio = 0.05
@@ -168,7 +168,7 @@ def get_small_config_span_noise() -> Config:
     cfg.model.n_layers = 2
     cfg.model.max_seq  = 512
 
-    cfg.data.chunk_size  = 100_000
+    cfg.data.chunk_size  = 40_000
     cfg.data.seg_len     = 512
     
     cfg.data.sequential_mode = True
