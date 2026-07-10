@@ -231,7 +231,7 @@ def get_110m_config() -> Config:
     cfg.data.seg_len     = 512
     
     # use_span_noise = True, span_noise_ratio = 0.05
-    cfg.train.use_span_noise   = True
+    cfg.train.use_span_noise   = False
     cfg.train.span_noise_ratio = 0.05
     
     # batch 32, grad_accum 64 → effective batch 2048, LR 3e-4, warmup 200 steps, decay cycle 10_000 steps
