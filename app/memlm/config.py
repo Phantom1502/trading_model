@@ -143,6 +143,9 @@ def get_small_config() -> Config:
     cfg.data.chunk_size  = 40_000
     cfg.data.seg_len     = 512
     
+    cfg.data.sequential_mode = True
+    cfg.data.window_stride   = cfg.data.seg_len  # No Overlap
+    
     # use_span_noise = True, span_noise_ratio = 0.05
     cfg.train.use_span_noise   = False
     cfg.train.eval_every = 99_999_999
