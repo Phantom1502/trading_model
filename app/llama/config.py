@@ -97,8 +97,8 @@ class TrainConfig:
     device                     : str   = "cuda"
     output_dir                 : str   = "./checkpoints_price"
 
-    per_device_train_batch_size: int   = 32
-    per_device_eval_batch_size : int   = 32
+    per_device_train_batch_size: int   = 128
+    per_device_eval_batch_size : int   = 128
     gradient_accumulation_steps: int   = 8
 
     learning_rate              : float = 3e-4
