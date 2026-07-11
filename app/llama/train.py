@@ -12,11 +12,14 @@ KHÁC HẲN bản tiếng Việt cũ ở 2 điểm cốt lõi:
    bản cũ, dù trông tiện lợi.
 
 2. KHÔNG dùng hệ thống multi-shard/Drive/state.json của bản cũ (thiết kế
-   cho stream 14B token từ HF Hub, không fit RAM/dataset 1 lần). Data ở
-   đây (5 symbol, mỗi doc cố định, đã tách sẵn train/val theo mốc thời
-   gian < 2026 / >= 2026) đủ nhỏ để nạp thẳng qua `datasets.load_dataset`
-   + `.map()` một lần, dùng HF Trainer + resume_from_checkpoint chuẩn —
-   không cần cơ chế riêng.
+   cho stream 14B token từ HF Hub). Ở đây file train có thể vài GB (đã
+   gộp 5 symbol) — dùng `datasets` STREAMING trực tiếp trên file local
+   (không cần tự chia shard/quản lý state), Trainer nhận IterableDataset
+   bình thường. Val (nhỏ hơn nhiều, tách theo mốc thời gian >= 2026) load
+   THƯỜNG — cần biết độ dài để eval loop chạy đúng (IterableDataset không
+   có len()). max_steps được tính tự động từ tổng số row trong metadata
+   parquet (chỉ đọc footer, không đọc data) — KHÔNG dùng num_train_epochs
+   trực tiếp vì streaming dataset không có len().
 
 Giả định cấu trúc data (xem app.llama.config.DataConfig):
     - train_parquet_path : 1 file (hoặc glob pattern) parquet đã shuffle
@@ -204,6 +207,44 @@ def build_training_args(cfg: Config) -> TrainingArguments:
 # 5. MAIN
 # =====================================================================================
 
+def resume_checkpoint_from_hub_if_needed(cfg: Config):
+    """
+    Ưu tiên checkpoint LOCAL (output_dir) trước — nhanh hơn, không cần
+    mạng. Chỉ tải từ Hub nếu không có checkpoint local nào (vd session
+    Colab bị ngắt, output_dir không nằm trên storage sống sót qua session).
+
+    Checkpoint trên Hub nằm ở BRANCH "last-checkpoint" (do
+    hub_strategy="checkpoint" trong build_training_args), KHÔNG PHẢI
+    branch "main" — snapshot_download(revision="last-checkpoint") tải
+    đúng nội dung checkpoint (không nested trong "checkpoint-XXX/" như
+    local, vì Trainer push thẳng nội dung ra root của branch đó).
+
+    Cần cfg.hub.repo_id đã set VÀ đã login (huggingface_hub.login() hoặc
+    HF_TOKEN) với quyền đọc — checkpoint push với hub_private_repo=True
+    nên không tải được nếu chưa đăng nhập.
+    """
+    local_ckpt = get_last_checkpoint(cfg.train.output_dir)
+    if local_ckpt:
+        return local_ckpt
+
+    if not cfg.hub.repo_id:
+        return None
+
+    print("Không có checkpoint local, thử tải từ HF Hub (branch 'last-checkpoint')...")
+    try:
+        from huggingface_hub import snapshot_download
+        import shutil
+
+        hub_ckpt_dir = snapshot_download(repo_id=cfg.hub.repo_id, revision="last-checkpoint")
+        dest = os.path.join(cfg.train.output_dir, "checkpoint-from-hub")
+        shutil.copytree(hub_ckpt_dir, dest, dirs_exist_ok=True)
+        print(f"  ✓ Đã khôi phục checkpoint từ Hub -> {dest}")
+        return dest
+    except Exception as e:
+        print(f"  ⚠ Không có checkpoint trên Hub hoặc lỗi khi tải: {e}")
+        return None
+
+
 def main(cfg: Config = None):
     if cfg is None:
         cfg = Config()
@@ -253,10 +294,11 @@ def main(cfg: Config = None):
         data_collator=data_collator,
     )
 
-    # ── Resume — Trainer chuẩn, KHÔNG cần shard-state riêng như bản cũ ──────
+    # ── Resume — ưu tiên local, fallback sang HF Hub nếu output_dir bị mất
+    # (vd session Colab ngắt, output_dir không nằm trên storage bền vững) ──
     resume_ckpt = cfg.train.resume_from_checkpoint
     if resume_ckpt is None:
-        resume_ckpt = get_last_checkpoint(cfg.train.output_dir)
+        resume_ckpt = resume_checkpoint_from_hub_if_needed(cfg)
 
     if resume_ckpt:
         print(f"Resume từ checkpoint: {resume_ckpt}")
