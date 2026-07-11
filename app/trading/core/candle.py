@@ -45,7 +45,7 @@ class CandleParser:
     def build_raw_text(self) -> str:
         """Sinh lại chuỗi token chuẩn từ list Candle — dùng khi CandleParser.slice()
         cần raw_text khớp đúng đoạn đã cắt (xem test_slice.py, case tie_breaking_raw_text_rebuild)."""
-        tokens = [f"O_{c.open} H_{c.high} L_{c.low} C_{c.close}" for c in self.candles]
+        tokens = [f"<px_O_{c.open}> <px_H_{c.high}> <px_L_{c.low}> <px_C_{c.close}>" for c in self.candles]
         return "<chart> " + " ".join(tokens) + " </chart>"
     
 if __name__ == "__main__":

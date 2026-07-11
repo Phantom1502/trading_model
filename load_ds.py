@@ -31,15 +31,21 @@ if __name__ == "__main__":
         "data/encoded/XAUUSD_Daily_preprocessed_encoded.csv",
     ]
     
-    pawriter = ParquetWriterUtil("data/dataset/train_raw_100candles.parquet")
-    for f in input_files:
+    inputs_val_files = [
+        "data/encoded/EURUSD_M1_Val_preprocessed_encoded.csv",
+        "data/encoded/GBPUSD_M1_Val_preprocessed_encoded.csv",
+        "data/encoded/XAUUSD_M1_Val_preprocessed_encoded.csv",
+    ]
+    
+    pawriter = ParquetWriterUtil("data/dataset/val_raw_100candles.parquet")
+    for f in inputs_val_files:
         print(f"Processing {f}")
         pawriter.run(RawChartGenerator(f))
         
     pawriter.close()
         
     # Read parquet file
-    df = pd.read_parquet(r'data\dataset\train_raw_100candles.parquet')
+    df = pd.read_parquet(r'data\dataset\val_raw_100candles.parquet')
 
     # Display head
     print(len(df))

@@ -1,189 +1,273 @@
 """
-train.py — Vòng lặp chính, pretrain LLaMA tiếng Việt nhiều-shard (app/llama)
+train.py — Pretrain model đọc giá chuyên biệt (price-only decoder)
 ================================================================================
-Bản refactor từ file nháp gốc (1 file ~300 dòng gộp hết) — logic KHÔNG ĐỔI,
-chỉ tách theo trách nhiệm ra các module riêng:
+KHÁC HẲN bản tiếng Việt cũ ở 2 điểm cốt lõi:
 
-    config.py         — Config/ModelConfig/DataConfig/TrainConfig/HubConfig
-    tokenizer.py       — load_tokenizer, sync_vocab_size, check_tokenizer_matches_model_config
-    model.py            — build_model (LlamaForCausalLM, random init)
-    dataset.py            — tokenize_function/group_texts, shard + val dataset (parquet local)
-    state.py                — shard_index / resume state (JSON trên Drive)
-    hub_utils.py              — login/push/resume qua Hugging Face Hub (backup phụ)
-    trainer_utils.py            — TrainingArguments + optimizer/scheduler (1 lần cho toàn bộ 14B token)
+1. KHÔNG group_texts() nối nhiều document rồi cắt lại theo block_size.
+   Data giờ đã ĐỀU: mỗi row parquet là ĐÚNG 1 doc 100 nến (402 token cố
+   định, xem app.llama.config.DOC_LEN_TOKENS). Nối-cắt theo block_size sẽ
+   PHÁ VỠ ranh giới doc, làm mất đúng ý nghĩa "1 chuỗi 100 nến liên tục"
+   mà toàn bộ thiết kế (tokenizer, max_position_embeddings, cách dùng lúc
+   inference) đang dựa vào — đây là lý do KHÔNG tái dùng group_texts của
+   bản cũ, dù trông tiện lợi.
 
-File này giờ CHỈ CÒN vòng lặp orchestration: gọi các module trên theo đúng
-thứ tự, không còn logic chi tiết nào nằm trực tiếp ở đây.
+2. KHÔNG dùng hệ thống multi-shard/Drive/state.json của bản cũ (thiết kế
+   cho stream 14B token từ HF Hub, không fit RAM/dataset 1 lần). Data ở
+   đây (5 symbol, mỗi doc cố định, đã tách sẵn train/val theo mốc thời
+   gian < 2026 / >= 2026) đủ nhỏ để nạp thẳng qua `datasets.load_dataset`
+   + `.map()` một lần, dùng HF Trainer + resume_from_checkpoint chuẩn —
+   không cần cơ chế riêng.
+
+Giả định cấu trúc data (xem app.llama.config.DataConfig):
+    - train_parquet_path : 1 file (hoặc glob pattern) parquet đã shuffle
+      trộn 5 symbol, mỗi row là 1 doc "<chart> ... </chart>" đúng 100 nến.
+    - val_parquet_path   : cùng format, lấy từ mốc thời gian >= 2026,
+      KHÔNG overlap với train (đã tách khi build dataset, xem lịch sử chat).
 
 Chạy:
-    from app.llama.config import get_default_config
+    from app.llama.config import Config
     from app.llama.train import main
-    main(get_default_config())
+
+    cfg = Config()
+    cfg.data.train_parquet_path = "data/train_price.parquet"
+    cfg.data.val_parquet_path   = "data/val_price.parquet"
+    main(cfg)
 """
 
+import os
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError("Không tìm thấy thư mục gốc project (thư mục chứa 'app/').")
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import torch
-from transformers import Trainer
+from datasets import load_dataset
+from transformers import (
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    LlamaConfig,
+    LlamaForCausalLM,
+    Trainer,
+    TrainingArguments,
+)
 from transformers.trainer_utils import get_last_checkpoint
 
-from app.llama.config import Config, get_default_config, validate_config, print_config_summary
-from app.llama.tokenizer import (
-    load_tokenizer,
-    sync_vocab_size,
-    check_tokenizer_matches_model_config,
-)
-from app.llama.model import build_model, count_params
-from app.llama.dataset import (
-    list_shard_files,
-    get_or_build_val_dataset,
-    get_or_build_shard_dataset,
-    clear_previous_shard_cache,
-    main_process_first_if_distributed
-)
-from app.llama.state import (
-    ensure_dirs,
-    load_state,
-    mark_shard_completed,
-    is_fresh_shard_start,
-)
-from app.llama.hub_utils import hub_login, push_tokenizer_once
-from app.llama.trainer_utils import (
-    build_training_args,
-    build_optimizer_and_scheduler,
-    build_data_collator,
-)
+from app.llama.config import Config, ModelConfig, DOC_LEN_TOKENS
 
+
+# =====================================================================================
+# 1. TOKENIZER
+# =====================================================================================
+
+def load_tokenizer(cfg: Config):
+    tokenizer = AutoTokenizer.from_pretrained(
+        cfg.tokenizer.pretrained_name,
+        use_fast=cfg.tokenizer.use_fast,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = "<pad>"
+    return tokenizer
+
+
+# =====================================================================================
+# 2. DATASET — mỗi row = 1 doc CỐ ĐỊNH, KHÔNG group/nối (xem docstring module)
+# =====================================================================================
+
+def tokenize_function(examples, tokenizer, text_col: str):
+    """
+    Tokenize thẳng, KHÔNG group_texts. Mỗi row ra ĐÚNG DOC_LEN_TOKENS token
+    (vì data đã đều 100 nến/doc) — truncation/padding chỉ là lưới an toàn,
+    không kỳ vọng thực sự cắt/pad nếu data đúng như thiết kế.
+    """
+    result = tokenizer(
+        examples[text_col],
+        truncation=True,
+        max_length=DOC_LEN_TOKENS,
+        padding="max_length",
+    )
+    return result
+
+
+def build_datasets(cfg: Config, tokenizer):
+    if not cfg.data.train_parquet_path:
+        raise ValueError(
+            "cfg.data.train_parquet_path chưa được đặt. "
+            "Ví dụ: cfg.data.train_parquet_path = 'data/train_price.parquet'"
+        )
+    if not cfg.data.val_parquet_path:
+        raise ValueError(
+            "cfg.data.val_parquet_path chưa được đặt — val PHẢI tách riêng "
+            "theo mốc thời gian (>= 2026), không dùng random split trên "
+            "cùng file train (xem lịch sử quyết định, tránh leak thời gian)."
+        )
+
+    raw = load_dataset(
+        "parquet",
+        data_files={
+            "train": cfg.data.train_parquet_path,
+            "validation": cfg.data.val_parquet_path,
+        },
+    )
+
+    tokenized = raw.map(
+        lambda ex: tokenize_function(ex, tokenizer, cfg.data.text_col),
+        batched=True,
+        num_proc=os.cpu_count(),
+        remove_columns=raw["train"].column_names,
+        desc="Tokenizing (mỗi row = 1 doc cố định, không group)",
+    )
+
+    # Kiểm tra nhanh 1 sample đầu — bắt sớm nếu data không đều như kỳ vọng,
+    # thay vì để lộ ra giữa chừng training bằng lỗi khó hiểu.
+    sample_len = len(tokenized["train"][0]["input_ids"])
+    if sample_len != DOC_LEN_TOKENS:
+        print(
+            f"  CẢNH BÁO: doc đầu tiên sau tokenize dài {sample_len} token, "
+            f"khác DOC_LEN_TOKENS={DOC_LEN_TOKENS} kỳ vọng. Kiểm tra lại "
+            f"pipeline build dataset (mỗi row có đúng 100 nến không?)."
+        )
+
+    return tokenized["train"], tokenized["validation"]
+
+
+# =====================================================================================
+# 3. MODEL
+# =====================================================================================
+
+def build_model(model_cfg: ModelConfig) -> LlamaForCausalLM:
+    config = LlamaConfig(
+        vocab_size=model_cfg.vocab_size,
+        hidden_size=model_cfg.hidden_size,
+        intermediate_size=model_cfg.intermediate_size,
+        num_hidden_layers=model_cfg.num_hidden_layers,
+        num_attention_heads=model_cfg.num_attention_heads,
+        num_key_value_heads=model_cfg.num_key_value_heads,
+        max_position_embeddings=model_cfg.max_position_embeddings,
+        pad_token_id=3,   # khớp SPECIAL_TOKENS trong config.py: <pad>=3
+        bos_token_id=1,   # <bos>=1
+        eos_token_id=2,   # <eos>=2
+        tie_word_embeddings=model_cfg.tie_word_embeddings,
+    )
+    return LlamaForCausalLM._from_config(config, attn_implementation="sdpa")
+
+
+# =====================================================================================
+# 4. TRAINING ARGS
+# =====================================================================================
+
+def build_training_args(cfg: Config) -> TrainingArguments:
+    tc = cfg.train
+    kwargs = dict(
+        output_dir=tc.output_dir,
+        per_device_train_batch_size=tc.per_device_train_batch_size,
+        per_device_eval_batch_size=tc.per_device_eval_batch_size,
+        gradient_accumulation_steps=tc.gradient_accumulation_steps,
+        gradient_checkpointing=tc.gradient_checkpointing,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if tc.gradient_checkpointing else None,
+        learning_rate=tc.learning_rate,
+        weight_decay=tc.weight_decay,
+        lr_scheduler_type="cosine",
+        warmup_ratio=tc.warmup_ratio,
+        num_train_epochs=tc.num_train_epochs,
+        fp16=tc.fp16,
+        logging_steps=tc.logging_steps,
+        eval_strategy="steps",
+        eval_steps=tc.eval_steps,
+        save_strategy="steps",
+        save_steps=tc.save_steps,
+        save_total_limit=tc.save_total_limit,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        report_to="none",
+    )
+
+    if cfg.hub.repo_id:
+        kwargs.update(
+            push_to_hub=True,
+            hub_model_id=cfg.hub.repo_id,
+            hub_private_repo=True,
+            hub_strategy="checkpoint",
+        )
+
+    return TrainingArguments(**kwargs)
+
+
+# =====================================================================================
+# 5. MAIN
+# =====================================================================================
 
 def main(cfg: Config = None):
     if cfg is None:
-        cfg = get_default_config()
+        cfg = Config()
 
-    print_config_summary(cfg)
-    validate_config(cfg)
-
-    ensure_dirs(cfg)
+    os.makedirs(cfg.train.output_dir, exist_ok=True)
     torch.manual_seed(cfg.seed)
 
-    # Device chỉ dùng để LOG — TrainingArguments tự phát hiện GPU/TPU/CPU
-    # thật sự dùng lúc build Trainer (accelerate lo phần đó), không đọc lại
-    # cfg.train.device. Nhánh hardware="tpu" không gọi torch.cuda.is_available()
-    # vì không có ý nghĩa gì trên máy chỉ có TPU.
-    if cfg.train.hardware == "tpu":
-        device_str = "tpu"
-        print(f"Hardware: TPU ({cfg.train.num_tpu_cores} core, qua run())")
-    else:
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Device: {device_str}")
-        if device_str == "cuda":
-            print(f"GPU : {torch.cuda.get_device_name(0)}")
-            print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
-    cfg.train.device = device_str
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    cfg.train.device = device
+    print(f"Device: {device}")
+    if device == "cuda":
+        print(f"GPU : {torch.cuda.get_device_name(0)}")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
 
-    # ── Hugging Face Hub login (tùy chọn, chỉ cảnh báo nếu thiếu) ────────────
-    hub_login(cfg)
+    if cfg.hub.hf_token:
+        from huggingface_hub import login
+        login(token=cfg.hub.hf_token)
+    elif cfg.hub.repo_id:
+        print("Có repo_id nhưng chưa có hf_token — nhớ gọi huggingface_hub.login() thủ công trước khi chạy.")
 
-    # ── Tokenizer ────────────────────────────────────────────────────────────
+    # ── Tokenizer ──────────────────────────────────────────────────────────
     tokenizer = load_tokenizer(cfg)
-    sync_vocab_size(tokenizer, cfg)       # PHẢI chạy trước build_model()
-    check_tokenizer_matches_model_config(tokenizer, cfg)
-    print(f"Tokenizer vocab size: {cfg.model.vocab_size}")
+    cfg.model.vocab_size = max(cfg.model.vocab_size, len(tokenizer))
+    print(f"Tokenizer vocab size (thực tế): {len(tokenizer)} | model vocab_size (đã pad): {cfg.model.vocab_size}")
 
-    push_tokenizer_once(tokenizer, cfg)   # 1 lần duy nhất, cố định xuyên suốt
+    if cfg.hub.repo_id:
+        tokenizer.push_to_hub(cfg.hub.repo_id, private=True)
 
-    # ── Val set — xử lý 1 lần, cố định xuyên suốt toàn bộ quá trình ─────────
-    # ── Val set ──
-    with main_process_first_if_distributed(cfg):
-        lm_val = get_or_build_val_dataset(cfg, tokenizer)
-    # ── ──
-    data_collator = build_data_collator(tokenizer)
+    # ── Datasets ───────────────────────────────────────────────────────────
+    train_ds, val_ds = build_datasets(cfg, tokenizer)
+    print(f"Train docs: {len(train_ds):,} | Val docs: {len(val_ds):,}")
 
-    # ── Model ────────────────────────────────────────────────────────────────
-    model = build_model(cfg)
-    params = count_params(model)
-    print(f"Model params: {params['total']/1e6:.1f}M "
-          f"(embedding: {params['embedding']/1e6:.1f}M, "
-          f"non-embedding: {params['non_embedding']/1e6:.1f}M)")
-    
-    # QUAN TRỌNG: phải chuyển model sang XLA device TRƯỚC khi tạo optimizer —
-    # optimizer chụp tham chiếu tensor tham số lúc khởi tạo, nếu model còn ở
-    # CPU thì optimizer sẽ lệch device so với model sau khi Trainer/accelerate
-    # chuyển model sang TPU, gây lỗi "not on the same device".
-    if cfg.train.hardware == "tpu":
-        import torch_xla.core.xla_model as xm
-        model = model.to(xm.xla_device())
-        print(f"Model đã chuyển sang XLA device: {xm.xla_device()}")
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    # ── Optimizer + scheduler — tạo 1 LẦN cho toàn bộ hành trình nhiều-shard ─
-    optimizer, scheduler, total_steps = build_optimizer_and_scheduler(model, cfg)
-    print(f"Tổng step ước tính: {total_steps}")
+    # ── Model ──────────────────────────────────────────────────────────────
+    model = build_model(cfg.model)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Total params: {n_params/1e6:.1f}M")
 
-    # ── Shard list + state (resume) ──────────────────────────────────────────
-    shard_files = list_shard_files(cfg)
-    print(f"Tổng số shard: {len(shard_files)}")
-
-    state = load_state(cfg)
     training_args = build_training_args(cfg)
 
-    # ── Vòng lặp chính — xử lý tuần tự từng shard, resume đúng theo 2 trường hợp ─
-    for i in range(state["shard_index"], len(shard_files)):
-        shard_path = shard_files[i]
-        with main_process_first_if_distributed(cfg):
-            lm_shard = get_or_build_shard_dataset(cfg, tokenizer, i, shard_path)
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        data_collator=data_collator,
+    )
 
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=lm_shard,
-            eval_dataset=lm_val,
-            data_collator=data_collator,
-            optimizers=(optimizer, scheduler),
-        )
+    # ── Resume — Trainer chuẩn, KHÔNG cần shard-state riêng như bản cũ ──────
+    resume_ckpt = cfg.train.resume_from_checkpoint
+    if resume_ckpt is None:
+        resume_ckpt = get_last_checkpoint(cfg.train.output_dir)
 
-        # --- xác định đây là "resume giữa chừng shard này" hay "bắt đầu shard mới" ---
-        local_ckpt = get_last_checkpoint(cfg.train.output_dir)
-
-        if local_ckpt is None:
-            print(f"[Shard {i}] Không có checkpoint nào, train từ đầu.")
-            trainer.train()
-        elif is_fresh_shard_start(state, local_ckpt):
-            print(f"[Shard {i}] Checkpoint thuộc về shard trước, bắt đầu shard mới (không resume).")
-            trainer.train()
-        else:
-            print(f"[Shard {i}] Resume giữa chừng từ {local_ckpt}")
-            trainer.train(resume_from_checkpoint=local_ckpt)
-
-        # --- cập nhật state SAU KHI shard train xong hoàn toàn ---
-        final_ckpt = get_last_checkpoint(cfg.train.output_dir)
-        state = mark_shard_completed(cfg, i, final_ckpt)
-        print(f"✅ Hoàn thành shard {i}.")
-
-        # --- xoá cache shard TRƯỚC (không xoá shard vừa train) ---
-        clear_previous_shard_cache(cfg, i)
-
-    print("🎉 Đã train xong toàn bộ shard.")
-
-def _tpu_main_wrapper(index, cfg):
-    """torch_xla.launch tự truyền process index (0-7) làm tham số đầu tiên
-    khi gọi hàm — main() chỉ nhận cfg nên cần wrapper này để bỏ qua index."""
-    main(cfg)
-
-
-def run(cfg: Config = None):
-    """
-    Entry point NÊN DÙNG thay vì gọi main() trực tiếp — đây là chỗ DUY NHẤT
-    biết cách "launch" khác nhau giữa GPU/CPU (gọi main() bình thường) và
-    TPU (phải fork cfg.train.num_tpu_cores process qua torch_xla.launch,
-    mỗi process chạy 1 core trong 8 core của TPU v5e-8 trên Kaggle — main()
-    KHÔNG tự động chạy song song nếu gọi trực tiếp trên TPU).
-    """
-    if cfg is None:
-        cfg = get_default_config()
-
-    if cfg.train.hardware == "tpu":
-        import torch_xla
-        torch_xla.launch(_tpu_main_wrapper, args=(cfg,))
+    if resume_ckpt:
+        print(f"Resume từ checkpoint: {resume_ckpt}")
     else:
-        main(cfg)
+        print("Không có checkpoint, train từ đầu.")
+
+    trainer.train(resume_from_checkpoint=resume_ckpt)
+
+    print("✓ Train xong.")
+    return trainer
 
 
 if __name__ == "__main__":
-    run()
+    main()

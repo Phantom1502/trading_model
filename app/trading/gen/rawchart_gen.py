@@ -23,6 +23,7 @@ class RawChartGenerator(BaseGenerator):
                 break
             
             gen_text = self.df.iloc[self._count]["text"]
+            candleParser = CandleParser(gen_text)
             token_length = len(self.tokenizer.encode(gen_text)) if self.tokenizer else 402
 
             meta = {
@@ -32,14 +33,13 @@ class RawChartGenerator(BaseGenerator):
             }
 
             batch.append({
-                "text": gen_text,
+                "text": candleParser.build_raw_text(),
                 "source": "trading",
                 "token_length": token_length,
                 "meta": json.dumps(meta, ensure_ascii=False)
             })
             self._count += 1
             
-            candleParser = CandleParser(gen_text)
             min_value = candleParser.min()
             max_value = candleParser.max()
 

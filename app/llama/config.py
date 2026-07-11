@@ -1,316 +1,145 @@
 """
-config.py — Cấu hình cho pipeline pretrain LLaMA tiếng Việt (app/llama)
+config.py — Config cho model đọc giá chuyên biệt (price-only decoder)
 ==============================================================================
-Gộp toàn bộ hằng số đang nằm rải rác dạng module-level constant trong bản
-nháp train.py (DRIVE_ROOT, BLOCK_SIZE, PER_DEVICE_TRAIN_BATCH, TOTAL_TOKENS_ESTIMATE...)
-vào đây, theo đúng cấu trúc dataclass đã dùng ở app/memlm/config.py.
+Ghi đè hoàn toàn default cũ (nhánh tiếng Việt của app/llama chưa dùng thật,
+xem quyết định trong lịch sử chat). Model này KHÔNG có bất kỳ thành phần
+ngôn ngữ tự nhiên nào — vocab đóng, chỉ gồm price token + marker cấu trúc.
 
-TRẠNG THÁI: mới xong phần config. train.py CHƯA được sửa để đọc từ đây —
-làm tuần tự từng phần theo yêu cầu, bước sau mới refactor train.py.
+QUYẾT ĐỊNH ĐÃ CHỐT (không tự ý đổi nếu không có lý do mới):
+    - Vocab đóng ~4102 token: <unk>=0, <bos>=1, <eos>=2, <pad>=3 (GIỮ NGUYÊN
+      id này vì build_model() hiện tại đã hardcode đúng thứ tự), <chart>=4,
+      </chart>=5, rồi 4096 price token (O/H/L/C x 1024 bin) từ id 6.
+    - Price token dùng format bracket "<px_O_512>" (đã chốt trước đó) —
+      PHẢI add qua add_tokens() vì '<'/'>' là ký tự tách từ, không thể để
+      pre-tokenizer tự nhận diện nguyên khối.
+    - 1 document = ĐÚNG 100 nến cố định (không group/nối nhiều doc lại) —
+      max_position_embeddings tính theo 100*4 + 2 = 402, có buffer.
+    - KV cache bật cho Monte Carlo rollout — mặc định của LlamaForCausalLM
+      (use_cache=True), không cần cấu hình thêm ở đây.
+    - Vocab padding: 4102 -> làm tròn lên bội số 64 = 4160, CHỈ để tối ưu
+      tensor-core alignment cho lm_head/embedding (tied weights), KHÔNG có
+      lý do nào khác để pad thêm (xem app/memlm — cùng nguyên tắc).
 
-Đổi tên so với bản nháp gốc:
-    - `val_cache_path` -> `val_cache_dir` (nhất quán với train_shard_dir/cache_dir,
-      đều là thư mục chứa cache, không phải 1 file)
+Kích thước model (hidden/layers/heads) là ƯỚC LƯỢNG BAN ĐẦU dựa trên vocab
+hẹp + task hẹp (chỉ học động lực giá, không phải ngôn ngữ tự nhiên rộng) —
+CẦN điều chỉnh lại theo lượng dữ liệu thật khi đã có số liệu (nhiều dữ liệu
+hơn có thể tăng, ít hơn nên giảm để tránh overfit vô nghĩa).
 """
 
 from dataclasses import dataclass, field
 from typing import Optional
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Vocab — tính sẵn hằng số dùng chung giữa config.py và tokenizer builder
+# ══════════════════════════════════════════════════════════════════════
+
+N_PRICE_BINS       = 1024                          # bin mỗi kênh O/H/L/C
+SPECIAL_TOKENS     = ["<unk>", "<bos>", "<eos>", "<pad>"]   # id 0-3, GIỮ NGUYÊN thứ tự
+STRUCTURE_MARKERS  = ["<chart>", "</chart>"]                # id 4-5
+PRICE_LETTERS      = ["O", "H", "L", "C"]
+
+REAL_VOCAB_SIZE = len(SPECIAL_TOKENS) + len(STRUCTURE_MARKERS) + len(PRICE_LETTERS) * N_PRICE_BINS
+# = 4 + 2 + 4096 = 4102
+
+
+def _pad_vocab_size(n: int, multiple: int = 64) -> int:
+    """Làm tròn lên bội số `multiple` — CHỈ để alignment tensor-core, không
+    phải lý do nào khác (xem app/memlm — cùng nguyên tắc đã chốt)."""
+    return multiple * ((n + multiple - 1) // multiple)
+
+
+PADDED_VOCAB_SIZE = _pad_vocab_size(REAL_VOCAB_SIZE)   # 4160
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Số nến / độ dài chuỗi — tính sẵn để không hardcode rải rác
+# ══════════════════════════════════════════════════════════════════════
+
+CANDLES_PER_DOC   = 100                                  # 1 doc = đúng 100 nến, KHÔNG group nhiều doc
+TOKENS_PER_CANDLE = 4                                     # O H L C
+DOC_LEN_TOKENS    = CANDLES_PER_DOC * TOKENS_PER_CANDLE + 2   # +2 cho <chart>/</chart> = 402
+
+
 @dataclass
 class TokenizerConfig:
-    """Cấu hình tokenizer."""
-    pretrained_name: str = "custom_tokenizer_llama"
-    use_fast: bool = True
+    """Cấu hình tokenizer — vocab đóng, không có base BPE."""
+    pretrained_name: str = "custom_tokenizer_price"
+    use_fast        : bool = True
 
 
 @dataclass
 class ModelConfig:
-    """Cấu hình kiến trúc model — mặc định kiểu SmolLM-135M (30 layer, hidden 576),
-    đã test ổn định trên Colab T4 (xem readme.md mục 1)."""
-    vocab_size: int = 24000               # bị ghi đè runtime = len(tokenizer) sau khi load
-    hidden_size: int = 576
-    intermediate_size: int = 1536
-    num_hidden_layers: int = 30
-    num_attention_heads: int = 9
-    num_key_value_heads: int = 3          # GQA tỉ lệ 3:1
-    max_position_embeddings: int = 1024
-    tie_word_embeddings: bool = True
-
-    # Special token id — khớp custom_tokenizer_llama hiện tại (bos=1, eos=2, pad=3).
-    # Đưa vào config thay vì hardcode trong build_model() để đổi tokenizer sau
-    # này chỉ cần sửa config, không đụng code.
-    pad_token_id: int = 3
-    bos_token_id: int = 1
-    eos_token_id: int = 2
-
-    # Đã benchmark: sdpa nhanh hơn eager ~3 lần (0.12 it/s -> 0.40 it/s), xem
-    # readme.md mục 1 — KHÔNG dùng "eager".
-    attn_implementation: str = "sdpa"
-
-
-@dataclass
-class DataConfig:
-    """Cấu hình dữ liệu — pipeline nhiều-shard đọc parquet local (readme.md mục 5)."""
-    drive_root: str = "/content/drive/MyDrive/llama_project"
-
-    # Các path con mặc định suy ra từ drive_root (giữ đúng cấu trúc thư mục
-    # trong nháp: train_shards/, val/, train_shards_cache/, lm_val_cache/) —
-    # để None và gọi Config.resolve_paths() sau khi chỉnh drive_root, hoặc
-    # set tay riêng từng path nếu muốn đặt khác chỗ.
-    train_shard_dir: Optional[str] = None    # None -> f"{drive_root}/train_shards"
-    val_parquet_glob: Optional[str] = None   # None -> f"{drive_root}/val/*.parquet"
-    cache_dir: Optional[str] = None          # None -> f"{drive_root}/train_shards_cache"
-    val_cache_dir: Optional[str] = None      # None -> f"{drive_root}/lm_val_cache"
-
-    # = model.max_position_embeddings hiện tại, nhưng tách field riêng để có
-    # thể thử block_size khác (vd rút ngắn để tăng tốc) mà không đổi kiến trúc.
-    block_size: int = 1024
-
-    map_num_proc: Optional[int] = None   # None -> os.cpu_count() lúc dùng
+    """
+    Kiến trúc model — ƯỚC LƯỢNG BAN ĐẦU cho task hẹp (chỉ đọc giá).
+    So với config LLaMA-VN cũ (hidden=576, layers=30, vocab=24000):
+    nhỏ hơn nhiều vì vocab hẹp hơn ~6 lần và task không cần hiểu ngôn ngữ
+    tự nhiên rộng — chỉ cần đủ sâu để nắm bắt candlestick pattern + cấu
+    trúc thị trường (Swept/FVG/Shift) trong cửa sổ ngắn.
+    """
+    vocab_size              : int  = PADDED_VOCAB_SIZE          # 4160 (real=4102, xem docstring)
+    hidden_size              : int  = 256
+    intermediate_size         : int  = 704                        # SwiGLU-style: 64*ceil(8/3*256/64)
+    num_hidden_layers          : int  = 12
+    num_attention_heads         : int  = 8
+    num_key_value_heads           : int  = 4                        # GQA 2:1
+    max_position_embeddings         : int  = 512                      # buffer so với DOC_LEN_TOKENS=402
+    tie_word_embeddings                : bool = True
 
 
 @dataclass
 class TrainConfig:
-    """Cấu hình quá trình train — mặc định lấy từ bản nháp đã test ổn định
-    trên Colab T4 (readme.md mục 2 và 4)."""
-    device: str = "cuda"
+    """
+    Cấu hình quá trình train. Khác bản tiếng Việt cũ (không cần shard-state
+    tracking/multi-file Drive loop) — data đều 100 nến/doc, dùng thẳng HF
+    Trainer + resume_from_checkpoint chuẩn, không cần cơ chế riêng.
+    """
+    device                     : str   = "cuda"
+    output_dir                 : str   = "./checkpoints_price"
 
-    # "cuda" | "tpu" | "cpu" — MỌI khác biệt hành vi giữa GPU/TPU (precision,
-    # attn_implementation, cách launch multi-process) đều dẫn xuất từ field
-    # này, không rải rác if/else trong train.py. Đổi hardware = chỉ đổi 1
-    # dòng config (+ gọi get_tpu_config() cho tiện, xem bên dưới).
-    hardware: str = "cuda"
-    num_tpu_cores: int = 8   # Kaggle hiện cấp TPU v5e-8 (8 chip) — dùng khi
-                              # hardware="tpu" để notebook_launcher biết fork mấy process
+    per_device_train_batch_size: int   = 32
+    per_device_eval_batch_size : int   = 32
+    gradient_accumulation_steps: int   = 8
 
-    output_dir: Optional[str] = None   # None -> f"{data.drive_root}/checkpoints"
-    state_path: Optional[str] = None   # None -> f"{train.output_dir}/shard_state.json"
+    learning_rate              : float = 3e-4
+    weight_decay               : float = 0.1
+    warmup_ratio               : float = 0.03
+    num_train_epochs           : int   = 1
 
-    per_device_train_batch: int = 16
-    per_device_eval_batch: int = 16
-    grad_accum_steps: int = 8           # effective batch = 16 * 8 = 128
+    logging_steps              : int   = 50
+    eval_steps                 : int   = 200
+    save_steps                 : int   = 200
+    save_total_limit           : int   = 3
 
-    lr: float = 3e-4
-    weight_decay: float = 0.1
-    adam_beta1: float = 0.9
-    adam_beta2: float = 0.95
+    resume_from_checkpoint     : Optional[str] = None
+    fp16                       : bool  = True
+    gradient_checkpointing     : bool  = True
 
-    # Optimizer/scheduler tạo 1 LẦN cho toàn bộ hành trình nhiều-shard (readme.md
-    # mục 5.2) — cosine cần biết trước tổng số step, suy ra từ ước lượng tổng
-    # token thay vì đặt tay total_steps (dễ quên cập nhật khi đổi batch/block_size).
-    total_tokens_estimate: int = 14_000_000_000   # 14 file x ~1B token
-    warmup_ratio: float = 0.03
 
-    # CHỈ 1 trong 2 được True — fp16 cho GPU (T4 không hỗ trợ bf16 tốt), bf16
-    # cho TPU (không có hardware AMP scaler cho fp16, TPU native hỗ trợ bf16).
-    # get_tpu_config() tự set đúng cặp này, không cần nhớ tay.
-    fp16: bool = True
-    bf16: bool = False
-
-    gradient_checkpointing: bool = True
-    # Bắt buộc False, không dùng mặc định True của PyTorch — xem readme.md mục 2.
-    gradient_checkpointing_use_reentrant: bool = False
-
-    # QUAN TRỌNG: field này PHẢI nằm ở TrainConfig, không phải DataConfig — bug
-    # thật đã gặp: gán nhầm cfg.data.dataloader_num_workers không có tác dụng gì,
-    # Trainer vẫn đọc cfg.train.dataloader_num_workers (mặc định cũ = 2).
-    # Giữ 0 cho IterableDataset nhiều-shard để resume đúng vị trí (xem docstring
-    # train.py nháp, mục "Resume phân biệt 2 case").
-    dataloader_num_workers: int = 0
-
-    logging_steps: int = 10
-    # QUAN TRỌNG: khi load_best_model_at_end=True (hardcode trong
-    # trainer_utils.build_training_args), TrainingArguments BẮT BUỘC
-    # save_steps là bội số của eval_steps, nếu không raise ValueError ngay
-    # khi khởi tạo. Bản nháp gốc để save_steps=50/eval_steps=100 (không phải
-    # bội số) — bug có sẵn từ nháp, chỉ chưa lộ vì bản transformers cũ hơn
-    # validate lỏng hơn. Giữ cả 2 = 50 để chắc chắn tương thích; xem thêm
-    # validate_config() ở config.py — sẽ báo lỗi sớm nếu sau này đổi 2 số
-    # này mà quên giữ đúng quan hệ bội số.
-    eval_steps: int = 50
-    save_steps: int = 50              # ~40 phút/lần ở tốc độ hiện tại trên T4
-    save_total_limit: int = 3
-
-    num_train_epochs: int = 1   # chỉ 1 lượt / shard hiện tại rồi dừng (vòng lặp nhiều-shard)
+@dataclass
+class DataConfig:
+    """Cấu hình dữ liệu — 1 doc = 1 row parquet, KHÔNG group/nối nhiều doc
+    (khác hẳn pipeline group_texts của nhánh tiếng Việt cũ — xem ghi chú
+    trong train.py: group_texts nối-cắt theo block_size sẽ PHÁ vỡ ranh
+    giới doc 100-nến cố định, KHÔNG được dùng lại nguyên xi cho nhánh này)."""
+    train_parquet_path : str = ""
+    val_parquet_path   : str = ""
+    text_col           : str = "text"
 
 
 @dataclass
 class HubConfig:
-    """Cấu hình huggingface_hub — backup checkpoint + tokenizer (readme.md mục 6)."""
-    repo_id: Optional[str] = None
+    """Cấu hình huggingface_hub."""
+    repo_id : Optional[str] = None
     hf_token: Optional[str] = None
-    private_repo: bool = True
-    push_to_hub: bool = True
-    hub_strategy: str = "checkpoint"   # push full checkpoint (model+optimizer+scheduler+rng)
 
 
 @dataclass
 class Config:
     """Gộp tất cả config con."""
     tokenizer: TokenizerConfig = field(default_factory=TokenizerConfig)
-    model: ModelConfig = field(default_factory=ModelConfig)
-    train: TrainConfig = field(default_factory=TrainConfig)
-    data: DataConfig = field(default_factory=DataConfig)
-    hub: HubConfig = field(default_factory=HubConfig)
-    seed: int = 42
-
-    def resolve_paths(self) -> None:
-        """Điền các path còn None bằng giá trị suy ra từ drive_root/output_dir.
-
-        Gọi 1 LẦN sau khi cfg đã được chỉnh (vd đổi drive_root) — KHÔNG tự động
-        chạy trong __post_init__, vì dataclass không tự re-resolve khi field
-        khác (drive_root) đổi sau đó; gọi ngầm dễ gây bug "đổi drive_root mà
-        path con không đổi theo" nếu resolve chạy quá sớm.
-        """
-        root = self.data.drive_root
-        if self.data.train_shard_dir is None:
-            self.data.train_shard_dir = f"{root}/train_shards"
-        if self.data.val_parquet_glob is None:
-            self.data.val_parquet_glob = f"{root}/val/*.parquet"
-        if self.data.cache_dir is None:
-            self.data.cache_dir = f"{root}/train_shards_cache"
-        if self.data.val_cache_dir is None:
-            self.data.val_cache_dir = f"{root}/lm_val_cache"
-
-        if self.train.output_dir is None:
-            self.train.output_dir = f"{root}/checkpoints"
-        if self.train.state_path is None:
-            self.train.state_path = f"{self.train.output_dir}/shard_state.json"
-
-
-def get_default_config() -> Config:
-    """Config mặc định — khớp 1:1 giá trị hardcode trong bản nháp train.py hiện
-    tại (SmolLM-135M style, Colab T4, 14B token). Nhớ gọi lại cfg.resolve_paths()
-    nếu chỉnh drive_root/output_dir sau khi lấy cfg từ hàm này."""
-    cfg = Config()
-    cfg.resolve_paths()
-    return cfg
-
-
-def get_tpu_config() -> Config:
-    """
-    Config cho Kaggle TPU v5e-8 (8 chip) — CHỈ khác get_default_config() ở
-    đúng những field bị ảnh hưởng bởi khác biệt phần cứng GPU/TPU (xem
-    research note khi thêm field này): precision, attn_implementation, số
-    process cần fork. Mọi field khác (kiến trúc model, path data, optimizer
-    hyperparams...) giữ nguyên — đây chính là điểm "chỉ cần đổi config".
-
-    Cách dùng (bắt buộc launch qua notebook_launcher để chạy đủ 8 core, xem
-    train.py::run()):
-        from app.llama.config import get_tpu_config
-        from app.llama.train import run
-        run(get_tpu_config())
-    """
-    cfg = get_default_config()
-    cfg.train.hardware = "tpu"
-    cfg.train.fp16 = False
-    cfg.train.bf16 = True
-    cfg.model.attn_implementation = "eager"
-    cfg.train.dataloader_num_workers = 0
-    cfg.train.gradient_checkpointing = False
-
-    # Giảm batch size vì thiếu checkpointing (compat issue với XLA) khiến
-    # activation của cả 30 layer phải giữ hết cho backward — cộng với
-    # attn_implementation="eager" materialize full attention matrix mỗi layer
-    # (không có flash-attn kernel) -> OOM 197G/15.75G HBM ở batch=16.
-    # Giữ effective batch = 128 như cũ bằng cách tăng grad_accum bù lại.
-    cfg.train.per_device_train_batch = 1
-    cfg.train.per_device_eval_batch = 1
-    cfg.train.grad_accum_steps = 128   # 2 x 64 = 128, giữ effective batch cũ
-    return cfg
-
-
-def validate_config(cfg: Config) -> None:
-    """
-    Kiểm tra sớm các lỗi cấu hình PHỔ BIẾN nhất trước khi tốn thời gian
-    build model/tokenizer/dataset — raise ValueError với thông báo cụ thể
-    thay vì để lỗi xuất hiện mù mờ giữa chừng training (hoặc tệ hơn: không
-    lỗi gì cả mà chạy sai âm thầm, như trường hợp total_tokens_estimate lệch
-    thực tế khiến cosine LR decay sai tốc độ).
-
-    Gọi hàm này ngay đầu train.py::main(), TRƯỚC hub_login()/load_tokenizer().
-    """
-    import glob
-    import os
-
-    errors = []
-
-    # ── Data paths ───────────────────────────────────────────────────────
-    if not cfg.data.train_shard_dir or not os.path.isdir(cfg.data.train_shard_dir):
-        errors.append(f"data.train_shard_dir không tồn tại: {cfg.data.train_shard_dir!r}")
-    elif not glob.glob(f"{cfg.data.train_shard_dir}/*.parquet"):
-        errors.append(f"Không tìm thấy file .parquet nào trong data.train_shard_dir: {cfg.data.train_shard_dir!r}")
-
-    if not cfg.data.val_parquet_glob or not glob.glob(cfg.data.val_parquet_glob):
-        errors.append(f"Không tìm thấy file nào khớp data.val_parquet_glob: {cfg.data.val_parquet_glob!r}")
-
-    # ── block_size phải khớp kiến trúc model, nếu không context bị cắt sai ─
-    if cfg.data.block_size != cfg.model.max_position_embeddings:
-        errors.append(
-            f"data.block_size ({cfg.data.block_size}) != "
-            f"model.max_position_embeddings ({cfg.model.max_position_embeddings}) "
-            f"— 2 giá trị này phải khớp nhau, nếu không model sẽ không tận dụng "
-            f"hết context hoặc lỗi khi seq dài hơn max_position_embeddings."
-        )
-
-    # ── Hardware/precision: fp16 và bf16 không được cùng True (TrainingArguments
-    # sẽ raise), và TPU không nên dùng fp16 (không có hardware AMP scaler).
-    if cfg.train.fp16 and cfg.train.bf16:
-        errors.append("train.fp16 và train.bf16 không được CÙNG True — chọn đúng 1 theo hardware "
-                      "(fp16 cho GPU T4, bf16 cho TPU).")
-    if cfg.train.hardware == "tpu" and cfg.train.fp16:
-        errors.append("train.hardware='tpu' nhưng train.fp16=True — TPU không có hardware AMP "
-                      "scaler cho fp16, dùng train.bf16=True thay vào (xem get_tpu_config()).")
-    if cfg.train.hardware == "tpu" and cfg.model.attn_implementation == "sdpa":
-        print("  ⚠ CẢNH BÁO: hardware='tpu' nhưng attn_implementation='sdpa' — sdpa không đảm bảo "
-              "lower tốt sang XLA (dễ recompile liên tục), khuyến nghị đổi sang 'eager' cho TPU.")
-
-    # ── save_steps phải là bội số của eval_steps (ràng buộc cứng của
-    # TrainingArguments khi load_best_model_at_end=True — luôn True trong
-    # trainer_utils.build_training_args). Bug thật đã gặp: nháp gốc để
-    # save_steps=50/eval_steps=100, không phải bội số -> crash ngay khi tạo
-    # TrainingArguments với ValueError khó đoán nếu không biết trước ràng buộc này.
-    if cfg.train.eval_steps <= 0 or cfg.train.save_steps % cfg.train.eval_steps != 0:
-        errors.append(
-            f"train.save_steps ({cfg.train.save_steps}) phải là BỘI SỐ của "
-            f"train.eval_steps ({cfg.train.eval_steps}) — bắt buộc vì "
-            f"load_best_model_at_end=True. Ví dụ hợp lệ: eval_steps=50, save_steps=50/100/150..."
-        )
-
-    # ── Hub: push_to_hub=True nhưng thiếu repo_id -> TrainingArguments sẽ lỗi
-    # ngay khi Trainer khởi tạo, thà báo sớm ở đây còn hơn để crash lúc đó.
-    if cfg.hub.push_to_hub and not cfg.hub.repo_id:
-        errors.append(
-            "hub.push_to_hub=True nhưng hub.repo_id trống — set cfg.hub.repo_id "
-            "thành 'username/repo-name', hoặc set cfg.hub.push_to_hub=False nếu "
-            "chưa muốn dùng Hub."
-        )
-
-    if errors:
-        msg = "Config chưa sẵn sàng, cần sửa trước khi chạy:\n  - " + "\n  - ".join(errors)
-        raise ValueError(msg)
-
-    print("✓ Config hợp lệ — đã kiểm tra data path, block_size, hub.repo_id.")
-
-
-def print_config_summary(cfg: Config) -> None:
-    """In ra các giá trị THỰC TẾ sẽ được dùng (sau khi resolve_paths) — để
-    nhìn 1 lần biết chắc mình đang trỏ đúng folder/repo nào, không cần nhớ
-    field nào derive từ field nào."""
-    print("── Config summary ──────────────────────────────────────────")
-    print(f"  drive_root         : {cfg.data.drive_root}")
-    print(f"  train_shard_dir    : {cfg.data.train_shard_dir}")
-    print(f"  val_parquet_glob   : {cfg.data.val_parquet_glob}")
-    print(f"  cache_dir          : {cfg.data.cache_dir}")
-    print(f"  val_cache_dir      : {cfg.data.val_cache_dir}")
-    print(f"  block_size         : {cfg.data.block_size}")
-    print(f"  output_dir         : {cfg.train.output_dir}")
-    print(f"  state_path         : {cfg.train.state_path}")
-    print(f"  per_device_batch   : {cfg.train.per_device_train_batch}  "
-          f"x grad_accum {cfg.train.grad_accum_steps} = "
-          f"effective batch {cfg.train.per_device_train_batch * cfg.train.grad_accum_steps}")
-    print(f"  total_tokens_est.  : {cfg.train.total_tokens_estimate:,}")
-    print(f"  hub.repo_id        : {cfg.hub.repo_id}")
-    print(f"  hub.push_to_hub    : {cfg.hub.push_to_hub}")
-    print("────────────────────────────────────────────────────────────")
+    model    : ModelConfig     = field(default_factory=ModelConfig)
+    train    : TrainConfig     = field(default_factory=TrainConfig)
+    data     : DataConfig      = field(default_factory=DataConfig)
+    hub      : HubConfig       = field(default_factory=HubConfig)
+    seed     : int             = 42
