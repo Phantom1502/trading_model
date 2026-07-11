@@ -77,14 +77,14 @@ class ModelConfig:
     tự nhiên rộng — chỉ cần đủ sâu để nắm bắt candlestick pattern + cấu
     trúc thị trường (Swept/FVG/Shift) trong cửa sổ ngắn.
     """
-    vocab_size              : int  = PADDED_VOCAB_SIZE          # 4160 (real=4102, xem docstring)
-    hidden_size              : int  = 256
-    intermediate_size         : int  = 704                        # SwiGLU-style: 64*ceil(8/3*256/64)
-    num_hidden_layers          : int  = 12
-    num_attention_heads         : int  = 8
-    num_key_value_heads           : int  = 4                        # GQA 2:1
+    vocab_size                      : int  = PADDED_VOCAB_SIZE          # 4160 (real=4102, xem docstring)
+    hidden_size                     : int  = 512
+    intermediate_size               : int  = 1408                        # SwiGLU-style: 64*ceil(8/3*256/64)
+    num_hidden_layers               : int  = 12
+    num_attention_heads             : int  = 8
+    num_key_value_heads             : int  = 4                        # GQA 2:1
     max_position_embeddings         : int  = 512                      # buffer so với DOC_LEN_TOKENS=402
-    tie_word_embeddings                : bool = True
+    tie_word_embeddings              : bool = True
 
 
 @dataclass
