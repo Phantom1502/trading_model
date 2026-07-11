@@ -99,16 +99,16 @@ class TrainConfig:
 
     per_device_train_batch_size: int   = 128
     per_device_eval_batch_size : int   = 128
-    gradient_accumulation_steps: int   = 8
+    gradient_accumulation_steps: int   = 16
 
     learning_rate              : float = 3e-4
     weight_decay               : float = 0.1
     warmup_ratio               : float = 0.03
     num_train_epochs           : int   = 1
 
-    logging_steps              : int   = 50
-    eval_steps                 : int   = 200
-    save_steps                 : int   = 200
+    logging_steps              : int   = 4
+    eval_steps                 : int   = 20
+    save_steps                 : int   = 20
     save_total_limit           : int   = 3
 
     resume_from_checkpoint     : Optional[str] = None

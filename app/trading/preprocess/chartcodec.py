@@ -122,12 +122,29 @@ if __name__ == "__main__":
     # Test the ChartCodec class
     output_path = "data/encoded"
     window_size = 100
-    stride = window_size
+    stride = window_size // 20
     
     inputs_datas = [
-        {"csv_path": "data/preprocessed/EURUSD_M1_Val_preprocessed.csv", "scale": EURUSD_M1_SCALE},
-        {"csv_path": "data/preprocessed/XAUUSD_M1_Val_preprocessed.csv", "scale": XAUUSD_M1_SCALE},
-        {"csv_path": "data/preprocessed/GBPUSD_M1_Val_preprocessed.csv", "scale": GBPUSD_M1_SCALE},
+        {"csv_path": "data/preprocessed/AUDUSD_1Min_preprocessed.csv", "scale": AUDUSD_M1_SCALE},
+        {"csv_path": "data/preprocessed/AUDUSD_5Min_preprocessed.csv", "scale": AUDUSD_M5_SCALE},
+        {"csv_path": "data/preprocessed/AUDUSD_15Min_preprocessed.csv", "scale": AUDUSD_M15_SCALE},
+        {"csv_path": "data/preprocessed/AUDUSD_H1_preprocessed.csv", "scale": AUDUSD_H1_SCALE},
+        {"csv_path": "data/preprocessed/EURUSD_1Min_preprocessed.csv", "scale": EURUSD_M1_SCALE},
+        {"csv_path": "data/preprocessed/EURUSD_5Min_preprocessed.csv", "scale": EURUSD_M5_SCALE},
+        {"csv_path": "data/preprocessed/EURUSD_15Min_preprocessed.csv", "scale": EURUSD_M15_SCALE},
+        {"csv_path": "data/preprocessed/EURUSD_H1_preprocessed.csv", "scale": EURUSD_H1_SCALE},
+        {"csv_path": "data/preprocessed/GBPUSD_1Min_preprocessed.csv", "scale": GBPUSD_M1_SCALE},
+        {"csv_path": "data/preprocessed/GBPUSD_5Min_preprocessed.csv", "scale": GBPUSD_M5_SCALE},
+        {"csv_path": "data/preprocessed/GBPUSD_15Min_preprocessed.csv", "scale": GBPUSD_M15_SCALE},
+        {"csv_path": "data/preprocessed/GBPUSD_H1_preprocessed.csv", "scale": GBPUSD_H1_SCALE},
+        {"csv_path": "data/preprocessed/US500_1Min_preprocessed.csv", "scale": US500_M1_SCALE},
+        {"csv_path": "data/preprocessed/US500_5Min_preprocessed.csv", "scale": US500_M5_SCALE},
+        {"csv_path": "data/preprocessed/US500_15Min_preprocessed.csv", "scale": US500_M15_SCALE},
+        {"csv_path": "data/preprocessed/US500_H1_preprocessed.csv", "scale": US500_H1_SCALE},
+        {"csv_path": "data/preprocessed/XAUUSD_1Min_preprocessed.csv", "scale": XAUUSD_M1_SCALE},
+        {"csv_path": "data/preprocessed/XAUUSD_5Min_preprocessed.csv", "scale": XAUUSD_M5_SCALE},
+        {"csv_path": "data/preprocessed/XAUUSD_15Min_preprocessed.csv", "scale": XAUUSD_M15_SCALE},
+        {"csv_path": "data/preprocessed/XAUUSD_H1_preprocessed.csv", "scale": XAUUSD_H1_SCALE},
     ]
     
     for input_data in inputs_datas:
