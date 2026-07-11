@@ -107,8 +107,8 @@ class TrainConfig:
     num_train_epochs           : int   = 1
 
     logging_steps              : int   = 4
-    eval_steps                 : int   = 20
-    save_steps                 : int   = 20
+    eval_steps                 : int   = 10
+    save_steps                 : int   = 10
     save_total_limit           : int   = 3
 
     resume_from_checkpoint     : Optional[str] = None
