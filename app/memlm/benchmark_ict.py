@@ -22,12 +22,50 @@ lệch loại pattern, lệch mức giá).
 GROUND TRUTH luôn lấy từ chính app.ict detector (build_facts) qua
 render_*_sample() thật — KHÔNG viết tay bất kỳ giá trị đúng/sai nào, giữ
 đúng nguyên tắc golden test đã dùng xuyên suốt package app/ict/.
+
+────────────────────────────────────────────────────────────────────────────
+BREAKDOWN THEO template_mode (single-event vs multi-event) — MỚI:
+
+Quan sát thực nghiệm ở ~2B token pretrain: completion CHỈ CÓ 1 EVENT (mẫu
+"full template" theo render.py — <=2 event/mẫu dùng câu đầy đủ) có margin
+(score = pos_mean - neg_mean) MỎNG HƠN RÕ RỆT so với completion NHIỀU EVENT
+(mẫu "short template", >=3 event/mẫu) — kể cả khi cả 2 đều pass (score>0),
+2 case fail/score≈0 duy nhất quan sát được đều rơi vào nhóm chỉ-1-event.
+Giả thuyết: model có ít "chỗ bấu víu" hơn khi chỉ có đúng 1 con số cần
+verify (không có event khác gánh điểm), nên sai 1 chi tiết là mất hết margin.
+
+`template_mode` ở đây được suy ra TỪ CHÍNH CHUỖI EVAL ĐÃ SINH (không phải
+từ facts dict), dựa trên quy ước đã biết của render.py (xem
+`docs/ict/sample-types.md`, "Bảng viết tắt key trong <eval>"): N==1 event
+-> field KHÔNG đánh số (`T=... C=...`); N>1 -> field đánh số tiền tố
+`E<k>_` (`E1_T=... E2_T=...`). `_count_events()` đếm số tiền tố `E<k>_`
+khác nhau xuất hiện trong chuỗi; không tìm thấy tiền tố nào -> N==1.
+
+⚠️ Giả định trên dựa vào docstring/quy ước ghi trong code render.py,
+CHƯA tự tay đối chiếu trên output thật của `render_*_sample()`. Dùng
+`debug_check_template_mode_detection()` (cuối file) để verify 1 lần trên
+vài sample thật trước khi tin tưởng số liệu breakdown — nếu n_events đếm
+sai so với mắt thường nhìn vào `eval_inner`, báo lại để sửa regex.
 """
 
-import random
+import os
 import re
+import sys
+import random
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = _THIS_DIR
+while not os.path.isdir(os.path.join(_REPO_ROOT, "app")):
+    _parent = os.path.dirname(_REPO_ROOT)
+    if _parent == _REPO_ROOT:
+        raise RuntimeError(
+            "Không tìm thấy thư mục gốc project (thư mục chứa 'app/')."
+        )
+    _REPO_ROOT = _parent
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from app.ict.candle import Candle
 from app.ict.parser import CandleParser
@@ -35,7 +73,7 @@ from app.ict.facts import build_facts
 from app.ict.render import (
     render_swept_sample, render_fvg_sample, render_shift_sample,
 )
-from .benchmark import BenchItem, avg_logprob_per_token, run_logprob_benchmark
+from .benchmark import BenchItem, avg_logprob_per_token, score_item
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -70,6 +108,32 @@ def _extract_field(eval_inner: str, key: str) -> Optional[str]:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# template_mode — single-event vs multi-event (xem docstring module)
+# ══════════════════════════════════════════════════════════════════════
+
+# Chỉ đếm tiền tố "E<số>_" khi đứng ở ranh giới field hợp lệ (đầu chuỗi
+# hoặc sau khoảng trắng) VÀ theo ngay sau bởi 1 chữ cái hoa (bắt đầu tên
+# field thật, vd "E1_T=", "E2_SL=") — tránh match nhầm nếu 1 giá trị nào
+# đó (không nên xảy ra với int/enum hiện tại) chứa chuỗi trông giống "E1_".
+_EVENT_PREFIX_RE = re.compile(r"(?:^|\s)(E\d+)_[A-Z]")
+
+
+def _count_events(eval_inner: str) -> int:
+    """
+    Đếm số event trong 1 chuỗi eval — dựa vào tiền tố "E<k>_" xuất hiện
+    (k=1,2,...). Không tìm thấy tiền tố nào (N==1, theo quy ước render.py
+    không đánh số khi chỉ có 1 event) -> trả về 1.
+    """
+    prefixes = {m.group(1) for m in _EVENT_PREFIX_RE.finditer(eval_inner)}
+    return len(prefixes) if prefixes else 1
+
+
+def _template_mode(eval_inner: str) -> str:
+    """"single" nếu đúng 1 event, "multi" nếu >=2 event."""
+    return "single" if _count_events(eval_inner) == 1 else "multi"
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Xây BenchItem từ 1 sample thật (render_*_sample output)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -82,6 +146,12 @@ def _inner_eval(sample: Dict[str, Any]) -> str:
     """Trích phần bên trong <eval>...</eval>, bỏ 2 tag."""
     e = sample["eval"]
     return e[len("<eval>"):-len("</eval>")]
+
+
+def _meta_for(inner: str) -> Dict[str, Any]:
+    """Gói template_mode + n_events vào meta của BenchItem — dùng cho
+    breakdown ở bước chấm điểm, xem `_score_ict_items_with_breakdown()`."""
+    return {"template_mode": _template_mode(inner), "n_events": _count_events(inner)}
 
 
 def _build_swept_items(sample: Dict[str, Any], rng: random.Random) -> List[BenchItem]:
@@ -115,7 +185,10 @@ def _build_swept_items(sample: Dict[str, Any], rng: random.Random) -> List[Bench
 
     if not negatives:
         return []
-    return [BenchItem(prompt=prompt, positive=[inner], negative=negatives, note="ict_swept")]
+    return [BenchItem(
+        prompt=prompt, positive=[inner], negative=negatives, note="ict_swept",
+        meta=_meta_for(inner),
+    )]
 
 
 def _build_fvg_items(sample: Dict[str, Any], rng: random.Random) -> List[BenchItem]:
@@ -146,7 +219,10 @@ def _build_fvg_items(sample: Dict[str, Any], rng: random.Random) -> List[BenchIt
 
     if not negatives:
         return []
-    return [BenchItem(prompt=prompt, positive=[inner], negative=negatives, note="ict_fvg")]
+    return [BenchItem(
+        prompt=prompt, positive=[inner], negative=negatives, note="ict_fvg",
+        meta=_meta_for(inner),
+    )]
 
 
 def _build_shift_items(sample: Dict[str, Any], rng: random.Random) -> List[BenchItem]:
@@ -184,7 +260,10 @@ def _build_shift_items(sample: Dict[str, Any], rng: random.Random) -> List[Bench
 
     if not negatives:
         return []
-    return [BenchItem(prompt=prompt, positive=[inner], negative=negatives, note="ict_shift")]
+    return [BenchItem(
+        prompt=prompt, positive=[inner], negative=negatives, note="ict_shift",
+        meta=_meta_for(inner),
+    )]
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -200,8 +279,8 @@ def build_ict_bench_items(
     nghị đúng 20 nến khớp cấu hình dataset đã dùng để pretrain).
 
     Trả về dict {"swept": [...], "fvg": [...], "shift": [...]} — mỗi
-    value là list BenchItem, dùng trực tiếp với run_logprob_benchmark()
-    có sẵn trong benchmark.py.
+    value là list BenchItem, mỗi BenchItem đã gắn sẵn
+    `meta = {"template_mode": "single"|"multi", "n_events": int}`.
 
     CHỈ những chart THẬT SỰ có event mới sinh ra BenchItem (giống nguyên
     tắc SKIP của render.py khi 0 event) — số lượng BenchItem mỗi loại phụ
@@ -232,6 +311,102 @@ def build_ict_bench_items(
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Chấm điểm + breakdown theo template_mode — 1 LƯỢT DUY NHẤT (không tính
+# lại avg_logprob 2 lần cho "tổng" và "breakdown" — mỗi item chỉ forward
+# qua model đúng 1 lần).
+# ══════════════════════════════════════════════════════════════════════
+
+def _summarize_scores(scores: List[float]) -> tuple:
+    """(avg_score, pass_rate, n) — pass_rate = tỉ lệ score > 0. n=0 -> (0.0, 0.0, 0)."""
+    if not scores:
+        return 0.0, 0.0, 0
+    avg = sum(scores) / len(scores)
+    pass_rate = sum(1 for s in scores if s > 0) / len(scores)
+    return avg, pass_rate, len(scores)
+
+
+def score_ict_items_with_breakdown(
+    model,
+    tokenizer,
+    bench_items: List[BenchItem],
+    level_name: str,
+    device,
+    max_seq: int = 512,
+    verbose: bool = True,
+) -> Dict[str, float]:
+    """
+    Chấm điểm toàn bộ `bench_items` (1 loại — vd chỉ "swept") ĐÚNG 1 LƯỢT,
+    đồng thời tính:
+        - Điểm TỔNG THỂ (giống hệt run_logprob_benchmark cũ trong benchmark.py)
+        - Điểm tách riêng theo `item.meta["template_mode"]` ("single"/"multi")
+
+    Trả về dict phẳng, mọi giá trị là float — an toàn khi ghép trực tiếp
+    vào dict kết quả chung rồi log qua `log_bench()` (dùng f"{v:.4f}"):
+
+        {level_name}_avg_score        : điểm trung bình TOÀN BỘ item
+        {level_name}_pass_rate        : tỉ lệ score>0 TOÀN BỘ item
+        {level_name}_n                : tổng số item
+        {level_name}_single_avg_score : điểm trung bình nhóm chỉ-1-event
+        {level_name}_single_pass_rate : tỉ lệ pass nhóm chỉ-1-event
+        {level_name}_single_n         : số item nhóm chỉ-1-event
+        {level_name}_multi_avg_score  : điểm trung bình nhóm nhiều-event
+        {level_name}_multi_pass_rate  : tỉ lệ pass nhóm nhiều-event
+        {level_name}_multi_n          : số item nhóm nhiều-event
+
+    Nhóm rỗng (vd chart mẫu không sinh ra item multi-event nào) -> 3 field
+    tương ứng đều = 0.0 (không phải None, để log_bench().4f không lỗi).
+    """
+    model.eval()
+
+    all_scores: List[float] = []
+    by_mode: Dict[str, List[float]] = {"single": [], "multi": []}
+
+    if verbose:
+        print(f"\n{'─'*60}\n  [{level_name.upper()}]\n{'─'*60}")
+
+    for item in bench_items:
+        r = score_item(model, tokenizer, item, device, max_seq)
+        all_scores.append(r["score"])
+
+        mode = (item.meta or {}).get("template_mode", "single")
+        by_mode.setdefault(mode, []).append(r["score"])
+
+        if verbose:
+            pos_fmt = "  ".join(f"{s:+.2f}" for s in r["pos_scores"])
+            neg_fmt = "  ".join(f"{s:+.2f}" for s in r["neg_scores"])
+            status  = "✓" if r["score"] > 0 else "✗"
+            n_ev    = (item.meta or {}).get("n_events", "?")
+            print(f"\n  [{mode}, n_events={n_ev}] prompt : {item.prompt!r}")
+            print(f"  pos_lp : [{pos_fmt}]  mean={r['pos_mean']:+.3f}")
+            print(f"  neg_lp : [{neg_fmt}]  mean={r['neg_mean']:+.3f}")
+            print(f"  score  : {r['score']:+.3f}  {status}")
+
+    overall_avg, overall_pass, overall_n     = _summarize_scores(all_scores)
+    single_avg,  single_pass,  single_n      = _summarize_scores(by_mode.get("single", []))
+    multi_avg,   multi_pass,   multi_n       = _summarize_scores(by_mode.get("multi", []))
+
+    if verbose:
+        n_pass = sum(1 for s in all_scores if s > 0)
+        print(f"\n  ► {level_name} avg_score = {overall_avg:+.3f}  |  pass = {n_pass}/{overall_n}")
+        if single_n:
+            print(f"      single-event (n={single_n:>3}): avg={single_avg:+.3f}  pass_rate={single_pass*100:.1f}%")
+        if multi_n:
+            print(f"      multi-event  (n={multi_n:>3}): avg={multi_avg:+.3f}  pass_rate={multi_pass*100:.1f}%")
+
+    return {
+        f"{level_name}_avg_score":        overall_avg,
+        f"{level_name}_pass_rate":        overall_pass,
+        f"{level_name}_n":                float(overall_n),
+        f"{level_name}_single_avg_score": single_avg,
+        f"{level_name}_single_pass_rate": single_pass,
+        f"{level_name}_single_n":         float(single_n),
+        f"{level_name}_multi_avg_score":  multi_avg,
+        f"{level_name}_multi_pass_rate":  multi_pass,
+        f"{level_name}_multi_n":          float(multi_n),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Runner — tích hợp cùng pattern run_logprob_benchmark() của benchmark.py
 # ══════════════════════════════════════════════════════════════════════
 
@@ -248,6 +423,14 @@ def run_ict_benchmark(
     Chạy benchmark ICT đầy đủ (Swept/FVG/Shift), trả về dict điểm trung
     bình mỗi loại + "ict_total" (trung bình 3 loại) — cùng format trả về
     style run_all() để dễ ghép vào log_bench()/checkpoint tracking.
+
+    Mỗi loại ("swept"/"fvg"/"shift") giờ trả về THÊM breakdown theo
+    template_mode (single-event vs multi-event) — xem
+    `score_ict_items_with_breakdown()` và docstring đầu module. Các khoá
+    CŨ (`ict_swept`, `ict_fvg`, `ict_shift`, `ict_total`) được GIỮ NGUYÊN
+    ý nghĩa (điểm trung bình toàn bộ item của loại đó) để không phá bất kỳ
+    nơi nào đang đọc đúng 4 khoá này (vd checkpoint tracking cũ, dashboard
+    cũ) — breakdown chỉ là các khoá THÊM VÀO, không thay thế.
     """
 
     device = device or next(model.parameters()).device
@@ -255,7 +438,9 @@ def run_ict_benchmark(
 
     items = build_ict_bench_items(charts, seed=seed)
 
-    scores = {}
+    scores: Dict[str, float] = {}
+    primary_scores: List[float] = []
+
     for kind in ("swept", "fvg", "shift"):
         bench = items[kind]
         if not bench:
@@ -263,12 +448,15 @@ def run_ict_benchmark(
                 print(f"  ⚠ Không có BenchItem nào cho '{kind}' — kiểm tra lại `charts` đầu vào.")
             scores[f"ict_{kind}"] = 0.0
             continue
-        scores[f"ict_{kind}"] = run_logprob_benchmark(
+
+        breakdown = score_ict_items_with_breakdown(
             model, tokenizer, bench, f"ict_{kind}", device, max_seq, verbose
         )
+        scores[f"ict_{kind}"] = breakdown[f"ict_{kind}_avg_score"]
+        scores.update(breakdown)
+        primary_scores.append(scores[f"ict_{kind}"])
 
-    present = [v for k, v in scores.items() if items[k.replace("ict_", "")]]
-    scores["ict_total"] = sum(present) / len(present) if present else 0.0
+    scores["ict_total"] = sum(primary_scores) / len(primary_scores) if primary_scores else 0.0
 
     return scores
 
@@ -294,6 +482,8 @@ CANDLES = [
     "<chart> O_396 H_404 L_385 C_395 O_395 H_398 L_387 C_393 O_393 H_421 L_386 C_393 O_393 H_397 L_374 C_382 O_382 H_382 L_321 C_328 O_325 H_326 L_224 C_268 O_268 H_313 L_250 C_284 O_284 H_294 L_266 C_278 O_278 H_316 L_274 C_313 O_313 H_321 L_298 C_314 O_314 H_350 L_312 C_350 O_349 H_350 L_348 C_349 O_349 H_363 L_338 C_361 O_360 H_371 L_351 C_359 O_359 H_369 L_347 C_360 O_360 H_367 L_342 C_349 O_349 H_362 L_348 C_352 O_352 H_353 L_347 C_349 O_348 H_386 L_346 C_384 O_384 H_390 L_378 C_380 </chart>",
     "<chart> O_522 H_535 L_513 C_517 O_517 H_518 L_515 C_515 O_515 H_526 L_510 C_520 O_520 H_525 L_499 C_512 O_512 H_558 L_506 C_550 O_550 H_565 L_546 C_551 O_551 H_557 L_534 C_544 O_542 H_548 L_542 C_544 O_544 H_559 L_536 C_558 O_558 H_574 L_544 C_567 O_567 H_567 L_513 C_524 O_524 H_524 L_477 C_485 O_485 H_489 L_459 C_477 O_473 H_475 L_471 C_473 O_473 H_489 L_467 C_486 O_486 H_503 L_483 C_491 O_491 H_507 L_481 C_502 O_502 H_504 L_472 C_499 O_499 H_513 L_477 C_502 O_503 H_508 L_502 C_505 </chart>",
 ]
+
+
 def run_all_ict_benchmarks(
     model,
     tokenizer,
@@ -306,12 +496,14 @@ def run_all_ict_benchmarks(
     """
     Wrapper tiện lợi để chạy benchmark ICT đầy đủ (Swept/FVG/Shift) + các
     benchmark khác trong benchmark.py (nếu muốn) — trả về dict điểm trung
-    bình mỗi loại + "ict_total" (trung bình 3 loại) + các benchmark khác.
+    bình mỗi loại + "ict_total" (trung bình 3 loại) + breakdown
+    single/multi-event mỗi loại (xem `score_ict_items_with_breakdown()`)
+    + các benchmark khác nếu có thêm.
     """
     if verbose:
         step_str = f"step {step}" if step is not None else "checkpoint"
         print(f"\n{'═'*60}\n  BENCHMARK  —  {step_str}\n{'═'*60}")
-        
+
     charts = []
     for c in CANDLES:
         candles = CandleParser(raw_text=c, swing_window=2).candles
@@ -321,8 +513,46 @@ def run_all_ict_benchmarks(
     return scores
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Debug helper — verify giả định về format eval_inner trên sample thật
+# (xem cảnh báo ở docstring đầu module). KHÔNG được gọi tự động ở bất kỳ
+# đâu trong pipeline train/benchmark chính thức.
+# ══════════════════════════════════════════════════════════════════════
+
+def debug_check_template_mode_detection(
+    charts: Optional[List[List[Candle]]] = None,
+    seed: int = 42,
+    n_per_kind: int = 5,
+) -> None:
+    """
+    In ra vài BenchItem thật kèm `n_events`/`template_mode` đã suy ra, để
+    tự mắt kiểm tra `_count_events()` có đếm đúng số event thật trong
+    `eval_inner` hay không (xem cảnh báo ở docstring đầu module).
+
+    Cách dùng:
+        from app.memlm.benchmark_ict import debug_check_template_mode_detection
+        debug_check_template_mode_detection()   # dùng CANDLES mẫu sẵn có
+        # hoặc truyền charts thật của bạn:
+        debug_check_template_mode_detection(charts=my_charts)
+
+    Nếu thấy `n_events` KHÔNG khớp số event đếm bằng mắt trong chuỗi eval
+    in ra, báo lại — khả năng cao `_EVENT_PREFIX_RE` không khớp đúng quy
+    ước tiền tố thật mà render.py đang dùng.
+    """
+    if charts is None:
+        charts = [CandleParser(raw_text=c, swing_window=2).candles for c in CANDLES]
+
+    items = build_ict_bench_items(charts, seed=seed)
+    for kind, bench in items.items():
+        print(f"\n{'='*60}\n  DEBUG template_mode — {kind} ({len(bench)} items)\n{'='*60}")
+        for item in bench[:n_per_kind]:
+            meta = item.meta or {}
+            print(f"\n  n_events={meta.get('n_events')}  template_mode={meta.get('template_mode')}")
+            print(f"  eval    : {item.positive[0]}")
+
+
 if __name__ == "__main__":
-    from generate import load_model_for_inference
+    from app.memlm.generate import load_model_for_inference
 
     model, tokenizer, cfg = load_model_for_inference("data/check_point/last_cp.pt")
     run_all_ict_benchmarks(model, tokenizer, cfg, verbose=True)
