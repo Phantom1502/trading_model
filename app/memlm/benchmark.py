@@ -52,6 +52,7 @@ class BenchItem:
     positive : List[str]
     negative : List[str]
     note     : str = ""
+    meta     : dict = None
 
 
 # ══════════════════════════════════════════════════════════════════════════
