@@ -7,10 +7,27 @@ N_BINS = 1024
 _TOKEN_RE = re.compile(r"([OHLC])_(\d+)")
 
 # Các loại scale factor có thể dùng để chuẩn hoá giá trong cửa sổ OHLC
-M1_SCALE = 23.95      # Window Range = M1_SCALE * ATR
-M5_SCALE = 27.38      # Window Range = M5_SCALE * ATR
-H1_SCALE = 22.81     # Window Range = H1_SCALE * ATR
-D1_SCALE = 17.22     # Window Range = D1_SCALE * ATR
+XAUUSD_M1_SCALE     = 23.95         # Window Range = M1_SCALE * ATR
+XAUUSD_M5_SCALE     = 27.38         # Window Range = M5_SCALE * ATR
+XAUUSD_M15_SCALE    = 24.74         # Window Range = M15_SCALE * ATR
+XAUUSD_H1_SCALE     = 22.81         # Window Range = H1_SCALE * ATR
+XAUUSD_D1_SCALE     = 17.22         # Window Range = D1_SCALE * ATR
+AUDUSD_M1_SCALE     = 27.19         # Window Range = M1_SCALE * ATR
+AUDUSD_M5_SCALE     = 27.24      # Window Range = M5_SCALE * ATR
+AUDUSD_M15_SCALE    = 23.73     # Window Range = M15_SCALE * ATR
+AUDUSD_H1_SCALE     = 20.18     # Window Range = H1_SCALE * ATR
+EURUSD_M1_SCALE     = 26.83 
+EURUSD_M5_SCALE     = 28.12 
+EURUSD_M15_SCALE    = 25.50 
+EURUSD_H1_SCALE     = 22.96 
+GBPUSD_M1_SCALE     = 26.89 
+GBPUSD_M5_SCALE     = 26.50 
+GBPUSD_M15_SCALE    = 25.32 
+GBPUSD_H1_SCALE     = 22.15 
+US500_M1_SCALE      = 30.20 
+US500_M5_SCALE      = 32.12 
+US500_M15_SCALE     = 27.86 
+US500_H1_SCALE      = 26.47 # Not set yet
 
 class ChartCodec:
     def __init__(self, scale: float, n_bins: int = N_BINS):
@@ -89,10 +106,10 @@ class ChartCodec:
 
         return pd.DataFrame(records)
 
-def encode_df(csv_path: str, output_path: str, window_size: int, scale: float):
+def encode_df(csv_path: str, output_path: str, window_size: int, scale: float, stride=50):
     codec = ChartCodec(scale=scale, n_bins=N_BINS)
     df = pd.read_csv(csv_path)
-    encoded_df = codec.encode_df(df, window_size=window_size, stride=window_size//2)
+    encoded_df = codec.encode_df(df, window_size=window_size, stride=stride)
     
     filename = csv_path.split('/')[-1].split('.')[0]
     output_file = f"{output_path}/{filename}_encoded.csv"
@@ -103,9 +120,18 @@ def encode_df(csv_path: str, output_path: str, window_size: int, scale: float):
     
 if __name__ == "__main__":
     # Test the ChartCodec class
-    csv_path = "data/preprocessed/XAUUSD_Daily_preprocessed.csv"
     output_path = "data/encoded"
     window_size = 100
-    scale = D1_SCALE  # Sử dụng scale factor cho D1
+    stride = window_size
     
-    encode_df(csv_path, output_path, window_size, scale)
+    inputs_datas = [
+        {"csv_path": "data/preprocessed/EURUSD_M1_Val_preprocessed.csv", "scale": EURUSD_M1_SCALE},
+        {"csv_path": "data/preprocessed/XAUUSD_M1_Val_preprocessed.csv", "scale": XAUUSD_M1_SCALE},
+        {"csv_path": "data/preprocessed/GBPUSD_M1_Val_preprocessed.csv", "scale": GBPUSD_M1_SCALE},
+    ]
+    
+    for input_data in inputs_datas:
+        csv_path = input_data["csv_path"]
+        scale = input_data["scale"]
+        print(f"Processing {csv_path} with scale {scale}")
+        encode_df(csv_path, output_path, window_size, scale, stride)

@@ -29,6 +29,25 @@ class CandleParser:
             candles.append(Candle(open=o, high=h, low=l, close=c))
         return candles
     
+    def min(self) -> int:
+        return min(candle.low for candle in self.candles)
+    
+    def max(self) -> int:
+        return max(candle.high for candle in self.candles)
+    
+    def shift(self, delta: int) -> None:
+        for candle in self.candles:
+            candle.open += delta
+            candle.high += delta
+            candle.low += delta
+            candle.close += delta
+            
+    def build_raw_text(self) -> str:
+        """Sinh lại chuỗi token chuẩn từ list Candle — dùng khi CandleParser.slice()
+        cần raw_text khớp đúng đoạn đã cắt (xem test_slice.py, case tie_breaking_raw_text_rebuild)."""
+        tokens = [f"O_{c.open} H_{c.high} L_{c.low} C_{c.close}" for c in self.candles]
+        return "<chart> " + " ".join(tokens) + " </chart>"
+    
 if __name__ == "__main__":
     sample_text = "O_100 H_110 L_90 C_105 O_105 H_115 L_95 C_110"
     parser = CandleParser(sample_text)

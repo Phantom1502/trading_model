@@ -66,6 +66,12 @@ class Preprocess:
             f.write(f"{filename}: {FINAL_SCALE_FACTOR:.2f}\n")
             
 if __name__ == "__main__":
-    csv_path = "data/raw/XAUUSD_1Min.csv"
+    csv_paths = [
+        "data/raw/EURUSD_M1_Val.csv", 
+        "data/raw/GBPUSD_M1_Val.csv",
+        "data/raw/XAUUSD_M1_Val.csv",
+    ]
     output_path = "data/preprocessed"
-    Preprocess.preprocess(csv_path, output_path, period=100)
+    for csv_path in csv_paths:
+        print(f"Processing {csv_path}")
+        Preprocess.preprocess(csv_path, output_path, period=100)
