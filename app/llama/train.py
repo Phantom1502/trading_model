@@ -83,6 +83,31 @@ def load_tokenizer(cfg: Config):
 # 2. DATASET — mỗi row = 1 doc CỐ ĐỊNH, KHÔNG group/nối (xem docstring module)
 # =====================================================================================
 
+def _count_parquet_rows(path_or_glob: str) -> int:
+    """
+    Đếm tổng số row bằng METADATA parquet (chỉ đọc footer, KHÔNG đọc data)
+    — rẻ ngay cả với file vài GB, kể cả khi nằm trên HF Hub (path dạng
+    "hf://datasets/<repo_id>/<file>.parquet") thay vì local. Hỗ trợ glob
+    pattern (nhiều file) ở cả 2 trường hợp.
+    """
+    import glob
+    import pyarrow.parquet as pq
+
+    if path_or_glob.startswith("hf://"):
+        from huggingface_hub import HfFileSystem
+        fs = HfFileSystem()
+        fs_path = path_or_glob[len("hf://"):]
+        files = fs.glob(fs_path) if any(ch in fs_path for ch in "*?[") else [fs_path]
+        if not files:
+            raise FileNotFoundError(f"Không tìm thấy file trên HF Hub khớp: {path_or_glob}")
+        return sum(pq.ParquetFile(f, filesystem=fs).metadata.num_rows for f in files)
+
+    files = sorted(glob.glob(path_or_glob)) if any(ch in path_or_glob for ch in "*?[") else [path_or_glob]
+    if not files:
+        raise FileNotFoundError(f"Không tìm thấy file parquet khớp: {path_or_glob}")
+    return sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+
+
 def tokenize_function(examples, tokenizer, text_col: str):
     """
     Tokenize thẳng, KHÔNG group_texts. Mỗi row ra ĐÚNG DOC_LEN_TOKENS token
@@ -99,6 +124,13 @@ def tokenize_function(examples, tokenizer, text_col: str):
 
 
 def build_datasets(cfg: Config, tokenizer):
+    """
+    Train: STREAMING (file lớn, vd 3GB — không load hết vào RAM). Tokenize
+    xảy ra "lazy" mỗi khi iterate, không có bước .map() chạy hết 1 lần.
+
+    Val: load THƯỜNG (Dataset, không streaming) — Trainer cần biết độ dài
+    để chạy eval loop bình thường (IterableDataset không có len()).
+    """
     if not cfg.data.train_parquet_path:
         raise ValueError(
             "cfg.data.train_parquet_path chưa được đặt. "
@@ -211,13 +243,20 @@ def resume_checkpoint_from_hub_if_needed(cfg: Config):
     """
     Ưu tiên checkpoint LOCAL (output_dir) trước — nhanh hơn, không cần
     mạng. Chỉ tải từ Hub nếu không có checkpoint local nào (vd session
-    Colab bị ngắt, output_dir không nằm trên storage sống sót qua session).
+    Colab/Kaggle bị ngắt, output_dir không nằm trên storage sống sót qua
+    session).
 
-    Checkpoint trên Hub nằm ở BRANCH "last-checkpoint" (do
-    hub_strategy="checkpoint" trong build_training_args), KHÔNG PHẢI
-    branch "main" — snapshot_download(revision="last-checkpoint") tải
-    đúng nội dung checkpoint (không nested trong "checkpoint-XXX/" như
-    local, vì Trainer push thẳng nội dung ra root của branch đó).
+    QUAN TRỌNG: tùy phiên bản `transformers`, hub_strategy="checkpoint"
+    push checkpoint theo 1 trong 2 cách khác nhau:
+        (a) Bản MỚI (đã xác nhận qua thực tế) — push vào THƯ MỤC CON
+            "last-checkpoint/" NGAY TRONG branch "main" (không phải
+            branch/revision riêng). Đây là cách phổ biến hiện tại.
+        (b) Bản CŨ hơn — push lên branch/revision RIÊNG tên
+            "last-checkpoint" (cách docstring cũ của app/llama/train.py
+            gốc — bản tiếng Việt — mô tả).
+
+    Thử (a) trước (khớp thực tế đã quan sát), fallback sang (b) nếu (a)
+    không tìm thấy, để code không phụ thuộc cứng vào 1 phiên bản.
 
     Cần cfg.hub.repo_id đã set VÀ đã login (huggingface_hub.login() hoặc
     HF_TOKEN) với quyền đọc — checkpoint push với hub_private_repo=True
@@ -230,15 +269,31 @@ def resume_checkpoint_from_hub_if_needed(cfg: Config):
     if not cfg.hub.repo_id:
         return None
 
-    print("Không có checkpoint local, thử tải từ HF Hub (branch 'last-checkpoint')...")
-    try:
-        from huggingface_hub import snapshot_download
-        import shutil
+    print("Không có checkpoint local, thử tải từ HF Hub...")
+    import shutil
+    from huggingface_hub import snapshot_download
 
+    dest = os.path.join(cfg.train.output_dir, "checkpoint-from-hub")
+
+    # (a) Thử subfolder "last-checkpoint/" trong branch main trước
+    try:
+        snap_dir = snapshot_download(
+            repo_id=cfg.hub.repo_id,
+            allow_patterns=["last-checkpoint/*"],
+        )
+        candidate = os.path.join(snap_dir, "last-checkpoint")
+        if os.path.isdir(candidate) and os.listdir(candidate):
+            shutil.copytree(candidate, dest, dirs_exist_ok=True)
+            print(f"  ✓ Đã khôi phục checkpoint từ Hub (subfolder main/last-checkpoint) -> {dest}")
+            return dest
+    except Exception as e:
+        print(f"  (thử subfolder main/last-checkpoint thất bại: {e})")
+
+    # (b) Fallback: branch/revision riêng tên "last-checkpoint" (bản transformers cũ hơn)
+    try:
         hub_ckpt_dir = snapshot_download(repo_id=cfg.hub.repo_id, revision="last-checkpoint")
-        dest = os.path.join(cfg.train.output_dir, "checkpoint-from-hub")
         shutil.copytree(hub_ckpt_dir, dest, dirs_exist_ok=True)
-        print(f"  ✓ Đã khôi phục checkpoint từ Hub -> {dest}")
+        print(f"  ✓ Đã khôi phục checkpoint từ Hub (revision last-checkpoint) -> {dest}")
         return dest
     except Exception as e:
         print(f"  ⚠ Không có checkpoint trên Hub hoặc lỗi khi tải: {e}")
